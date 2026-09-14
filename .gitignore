@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.spec
+node_modules/
+.env
+test-output/
+private-samples/
+*.MP4
+*.MOV
+
