@@ -1,0 +1,25 @@
+name: Build Windows release
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - shell: powershell
+        run: ./build-windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TPS-Bulk-Video-Editor-Windows
+          path: dist/TPS Bulk Video Editor.exe
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: dist/TPS Bulk Video Editor.exe
+
