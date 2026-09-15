@@ -13,13 +13,13 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from tkinter import BooleanVar, DoubleVar, IntVar, StringVar, Text, Tk, Toplevel, filedialog, messagebox, ttk
+from tkinter import BooleanVar, DoubleVar, IntVar, StringVar, TclError, Text, Tk, Toplevel, filedialog, messagebox, ttk
 
 import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.15"
+APP_VERSION = "1.3.16"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -79,6 +79,7 @@ class TPSVideoEditor:
         self.folder_name = StringVar(value="TPS Edited Videos")
         self.first_filename = StringVar(value=f"{self.job_date.get()}-DOL-DM-0001.MP4")
         self.low_res_enabled = BooleanVar(value=False)
+        self.low_res_only = BooleanVar(value=False)
         self.low_destination = StringVar()
         self.low_resolution = StringVar(value="640x480")
         self.export_quality = DoubleVar(value=85.0)
@@ -206,8 +207,15 @@ class TPSVideoEditor:
 
         naming = ttk.LabelFrame(right, text="3. Rename and output")
         naming.pack(fill="x")
-        self._field(naming, "First output filename", self.first_filename)
-        ttk.Label(naming, text="Example: 14-SEP-2026-DOL-SW-001.MP4", style="Card.TLabel").pack(anchor="w", pady=(0, 4))
+        name_parts = ttk.Frame(naming, style="Card.TFrame")
+        name_parts.pack(fill="x", pady=3)
+        ttk.Label(name_parts, text="Date", style="Card.TLabel").pack(side="left")
+        ttk.Entry(name_parts, textvariable=self.job_date, width=13).pack(side="left", padx=(4, 8))
+        ttk.Label(name_parts, text="DOL  •  Initials", style="Card.TLabel").pack(side="left")
+        ttk.Entry(name_parts, textvariable=self.photographer, width=5).pack(side="left", padx=(4, 8))
+        ttk.Label(name_parts, text="Start", style="Card.TLabel").pack(side="left")
+        ttk.Entry(name_parts, textvariable=self.start_number, width=5).pack(side="left", padx=(4, 0))
+        ttk.Label(naming, textvariable=self.first_filename, style="Card.TLabel").pack(anchor="w", pady=(0, 4))
         folder_row = ttk.Frame(naming, style="Card.TFrame")
         folder_row.pack(fill="x", pady=3)
         ttk.Label(folder_row, text="New folder name", width=19, style="Card.TLabel").pack(side="left")
@@ -218,8 +226,9 @@ class TPSVideoEditor:
         ttk.Button(dest_row, text="Destination", command=self.choose_destination).pack(side="left", padx=(6, 0))
         low_toggle = ttk.Frame(naming, style="Card.TFrame")
         low_toggle.pack(fill="x", pady=(7, 2))
-        ttk.Checkbutton(low_toggle, text="Also create low-res watermarked copies", variable=self.low_res_enabled).pack(side="left")
+        ttk.Checkbutton(low_toggle, text="Also create low-res watermarked copies", variable=self.low_res_enabled, command=self.low_res_option_changed).pack(side="left")
         ttk.Combobox(low_toggle, textvariable=self.low_resolution, values=("640x480", "854x480", "1280x720"), state="readonly", width=10).pack(side="right")
+        ttk.Checkbutton(naming, text="Create low-res watermarked videos only — skip full resolution", variable=self.low_res_only, command=self.low_res_option_changed).pack(anchor="w", pady=(1, 2))
         low_row = ttk.Frame(naming, style="Card.TFrame")
         low_row.pack(fill="x", pady=3)
         ttk.Entry(low_row, textvariable=self.low_destination).pack(side="left", fill="x", expand=True)
@@ -235,6 +244,7 @@ class TPSVideoEditor:
 
         edits = ttk.LabelFrame(right, text="4. Bulk adjustments")
         edits.pack(fill="x", pady=10)
+        self.edits_frame = edits
         self._slider(edits, "Exposure", self.exposure, -1.5, 1.5)
         self._slider(edits, "Contrast", self.contrast, 0.7, 1.4)
         self._slider(edits, "Shadows", self.shadows, -1.0, 1.0)
@@ -255,6 +265,7 @@ class TPSVideoEditor:
 
         logo = ttk.LabelFrame(right, text="5. TPS logo")
         logo.pack(fill="x")
+        self.logo_frame = logo
         logo_controls = ttk.Frame(logo, style="Card.TFrame")
         logo_controls.pack(fill="x")
         ttk.Checkbutton(logo_controls, text="Add TPS logo — top left", variable=self.logo_enabled, command=self._adjustment_changed).pack(side="left")
@@ -275,7 +286,10 @@ class TPSVideoEditor:
         self.summary = ttk.Label(right, text="Original SD-card files are never changed.", wraplength=360)
         self.summary.pack(fill="x", pady=7)
 
-        self.first_filename.trace_add("write", lambda *_: self.filename_changed())
+        self.job_date.trace_add("write", lambda *_: self.update_generated_filename())
+        self.photographer.trace_add("write", lambda *_: self.update_generated_filename())
+        self.start_number.trace_add("write", lambda *_: self.update_generated_filename())
+        self.update_generated_filename()
 
     def _field(self, parent, label, variable):
         row = ttk.Frame(parent, style="Card.TFrame")
@@ -319,7 +333,7 @@ class TPSVideoEditor:
 
 1. Select Choose SD card / folder and open the folder containing the videos.
 2. Tick the videos required. Select all and Select none change the whole list.
-3. Enter the first complete output filename, for example 14-SEP-2026-DOL-SW-0001.MP4.
+3. Enter the date, photographer initials and starting number. The locked DOL filename is generated automatically.
 4. Choose the destination where the new output folder will be created.
 5. Select corrections, low-resolution copies and TPS logo settings as required.
 6. Select Preview selected and move through the timeline to compare BEFORE and AFTER.
@@ -327,13 +341,17 @@ class TPSVideoEditor:
 
 VIDEOS AND NAMING
 
-First output filename — Controls every selected filename and the new folder name. The final number increases automatically: 0001, 0002, 0003 and so on.
+Date — Enter as DD-MMM-YYYY, for example 15-SEP-2026.
+Photographer initials — Enter the staff member's initials, for example SW. DOL is fixed automatically.
+Starting number — Usually 1. The generated filenames increase automatically: 0001, 0002, 0003 and so on.
+Generated filename — Locked to DD-MMM-YYYY-DOL-INITIALS-0001.MP4 so staff cannot accidentally change the required pattern.
 New folder name — Created automatically from the filename prefix and cannot conflict with an existing completed folder.
 Destination — Parent location for the full-resolution output folder.
 
 LOW-RESOLUTION COPIES
 
 Also create low-res watermarked copies — Creates a second upload-ready batch with the same filenames.
+Create low-res watermarked videos only — Creates only the upload-ready watermarked batch and skips the full-resolution exports.
 Resolution — 640x480, 854x480 or 1280x720. The image is never stretched; padding is added when required.
 Low-res destination — Optional separate location. Its folder name ends with -low res.
 Export quality — Controls video compression from 0 to 100 without changing the full-resolution dimensions. Default: 85%. Higher values create larger, cleaner files; 70–100 is recommended. Exact file size depends on the footage.
@@ -376,7 +394,7 @@ The orange BUSY notice, status column, progress bar and estimated time remaining
 
 STARTUP DEFAULTS — VERSION {APP_VERSION}
 
-Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Export quality 85% | Low-resolution copies OFF | TPS logo ON | Logo size 15%
+Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Export quality 85% | Low-resolution copies OFF | Low-resolution only OFF | TPS logo ON | Logo size 15%
 """)
         guide.config(state="disabled")
         ttk.Button(frame, text="Close instructions", command=win.destroy).pack(pady=(10, 0))
@@ -414,20 +432,27 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             self._schedule_preview(immediate=True)
 
     def filename_parts(self):
-        value = Path(self.first_filename.get().strip()).name
-        if not value.lower().endswith(".mp4"):
-            value += ".MP4"
-        stem = Path(value).stem
-        match = re.match(r"^(.*?)[-_](\d+)$", stem)
-        if match:
-            prefix, number = match.groups()
-            return clean_code(prefix, "TPS-VIDEO"), int(number), max(3, len(number))
-        return clean_code(stem, "TPS-VIDEO"), 1, 4
+        date_text = self.job_date.get().strip().upper()
+        initials = clean_code(self.photographer.get(), "PH")
+        try:
+            number = max(1, int(self.start_number.get()))
+        except (ValueError, TclError):
+            number = 1
+        return f"{date_text}-DOL-{initials}", number, 4
 
-    def filename_changed(self):
-        prefix, _, _ = self.filename_parts()
+    def update_generated_filename(self):
+        prefix, number, width = self.filename_parts()
+        self.first_filename.set(f"{prefix}-{number:0{width}d}.MP4")
         self.folder_name.set(prefix)
-        self.refresh_tree()
+        if hasattr(self, "tree"):
+            self.refresh_tree()
+
+    def low_res_option_changed(self):
+        if self.low_res_only.get():
+            self.low_res_enabled.set(True)
+            self.logo_enabled.set(True)
+        elif not self.low_res_enabled.get():
+            self.low_res_only.set(False)
 
     def output_name(self, index: int) -> str:
         prefix, start, width = self.filename_parts()
@@ -618,6 +643,17 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         else:
             self.start_processing()
 
+    def set_processing_controls(self, active: bool):
+        if active:
+            self.edits_frame.pack_forget()
+            self.logo_frame.pack_forget()
+            self.run_button.config(text="CANCEL BATCH EXPORT", style="Cancel.TButton")
+        else:
+            self.edits_frame.pack(fill="x", pady=10, before=self.run_button)
+            self.logo_frame.pack(fill="x", before=self.run_button)
+            self.run_button.config(text="CREATE EDITED VIDEOS", style="Primary.TButton")
+        self.run_button.state(["!disabled"])
+
     def open_output_folder(self):
         if self.last_output_folder and Path(self.last_output_folder).exists():
             if os.name == "nt":
@@ -628,11 +664,22 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
     def validate(self):
         if not self.selected_clips():
             return "Select at least one video."
-        if not self.destination.get():
+        try:
+            datetime.strptime(self.job_date.get().strip().upper(), "%d-%b-%Y")
+        except ValueError:
+            return "Enter the date as DD-MMM-YYYY, for example 15-SEP-2026."
+        if not re.fullmatch(r"[A-Za-z]{1,6}", self.photographer.get().strip()):
+            return "Enter the photographer initials using 1 to 6 letters only."
+        try:
+            if int(self.start_number.get()) < 1:
+                return "Starting number must be 1 or higher."
+        except (ValueError, TclError):
+            return "Enter a valid starting number."
+        if not self.low_res_only.get() and not self.destination.get():
             return "Choose an output destination."
-        if self.low_res_enabled.get() and not (self.low_destination.get() or self.destination.get()):
+        if (self.low_res_enabled.get() or self.low_res_only.get()) and not (self.low_destination.get() or self.destination.get()):
             return "Choose a destination for the low-resolution copies."
-        if (self.logo_enabled.get() or self.low_res_enabled.get()) and not Path(self.logo_path.get()).exists():
+        if (self.logo_enabled.get() or self.low_res_enabled.get() or self.low_res_only.get()) and not Path(self.logo_path.get()).exists():
             return "Choose the TPS logo PNG, or turn the logo off."
         return None
 
@@ -645,16 +692,17 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         self.summary.config(text="Preparing output folders…")
         self.root.update_idletasks()
         try:
-            destination_parent = Path(self.destination.get())
+            low_only = self.low_res_only.get()
+            destination_parent = Path((self.low_destination.get() or self.destination.get()) if low_only else self.destination.get())
             destination_parent.mkdir(parents=True, exist_ok=True)
             free_space = shutil.disk_usage(destination_parent).free
             selected_bytes = sum(c.source.stat().st_size for c in self.selected_clips())
-            required = selected_bytes * (1.25 if self.low_res_enabled.get() else 1.1)
+            required = selected_bytes * (0.35 if low_only else (1.25 if self.low_res_enabled.get() else 1.1))
             if free_space < required:
                 return messagebox.showerror(APP_NAME, f"There may not be enough free space at the destination.\n\nEstimated requirement: {human_size(int(required))}\nAvailable: {human_size(free_space)}")
-            output = self.create_unique_folder(Path(self.destination.get()), clean_code(self.folder_name.get(), "TPS-Edited-Videos"))
+            output = None if low_only else self.create_unique_folder(Path(self.destination.get()), clean_code(self.folder_name.get(), "TPS-Edited-Videos"))
             low_output = None
-            if self.low_res_enabled.get():
+            if self.low_res_enabled.get() or low_only:
                 low_parent = Path(self.low_destination.get() or self.destination.get())
                 low_output = self.create_unique_folder(low_parent, f"{clean_code(self.folder_name.get(), 'TPS-Edited-Videos')}-low res")
         except OSError as exc:
@@ -662,15 +710,15 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             return messagebox.showerror(APP_NAME, f"The output folder could not be created.\n\n{exc}")
         self.processing = True
         self.export_started_at = time.monotonic()
-        self.last_output_folder = output
+        self.last_output_folder = low_output if low_only else output
         self.open_folder_button.state(["disabled"])
         self.stop_requested.clear()
-        self.run_button.config(text="CANCEL BATCH EXPORT", style="Cancel.TButton")
-        self.run_button.state(["!disabled"])
+        self.set_processing_controls(True)
         self.busy_notice.config(text="BUSY — PREPARING EXPORT…", style="Busy.TLabel")
         self.summary.config(text="Starting video processing…")
         self.overall.configure(value=0)
         settings = self.settings_snapshot()
+        settings["low_res_only"] = low_only
         selected = self.selected_clips()
         output_names = [self.output_name(index) for index in range(len(selected))]
         threading.Thread(target=self.process_batch, args=(output, low_output, settings, selected, output_names), daemon=True).start()
@@ -794,36 +842,42 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         crf = str(self.quality_crf(settings["export_quality"], True))
         return [ffmpeg_path(), "-y", "-i", str(source), "-vf", resize, "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)]
 
-    def process_batch(self, output: Path, low_output: Path | None, settings, selected, output_names):
+    def process_batch(self, output: Path | None, low_output: Path | None, settings, selected, output_names):
         results = []
         completed_outputs = 0
         try:
-            task_total = len(selected) * (2 if low_output is not None else 1)
+            low_only = settings.get("low_res_only", False)
+            outputs_per_clip = 1 if low_only else (2 if low_output is not None else 1)
+            task_total = len(selected) * outputs_per_clip
             task_index = 0
             for index, clip in enumerate(selected):
                 if self.stop_requested.is_set():
                     break
-                target = output / output_names[index]
                 duration = self.video_duration(clip.source)
-                self.root.after(0, lambda c=clip: c.status.set("Starting FFmpeg…"))
-                self.root.after(0, self.refresh_tree)
-                return_code, full_log = self.run_export(self.command(clip.source, target, settings), duration, clip, "Full resolution", task_index, task_total)
-                if self.stop_requested.is_set():
-                    target.unlink(missing_ok=True)
-                    self.root.after(0, lambda c=clip: c.status.set("Stopped"))
-                    break
-                task_index += 1
-                ok = return_code == 0 and target.exists()
-                if ok:
-                    completed_outputs += 1
-                    full_size = human_size(target.stat().st_size)
-                    self.root.after(0, lambda c=clip, s=full_size: c.full_size.set(s))
+                target = None
+                full_log = ""
+                ok = True
+                if not low_only:
+                    target = output / output_names[index]
+                    self.root.after(0, lambda c=clip: c.status.set("Starting full-resolution FFmpeg…"))
+                    self.root.after(0, self.refresh_tree)
+                    return_code, full_log = self.run_export(self.command(clip.source, target, settings), duration, clip, "Full resolution", task_index, task_total)
+                    if self.stop_requested.is_set():
+                        target.unlink(missing_ok=True)
+                        self.root.after(0, lambda c=clip: c.status.set("Stopped"))
+                        break
+                    task_index += 1
+                    ok = return_code == 0 and target.exists()
+                    if ok:
+                        completed_outputs += 1
+                        full_size = human_size(target.stat().st_size)
+                        self.root.after(0, lambda c=clip, s=full_size: c.full_size.set(s))
                 low_target = None
                 low_error = ""
                 if ok and low_output is not None:
                     low_target = low_output / output_names[index]
                     self.root.after(0, lambda c=clip: c.status.set("Starting low-res FFmpeg…"))
-                    low_command = self.low_res_from_completed_command(target, low_target, settings) if settings["logo_enabled"] else self.command(clip.source, low_target, settings, low_res=True)
+                    low_command = self.command(clip.source, low_target, settings, low_res=True) if low_only or not settings["logo_enabled"] else self.low_res_from_completed_command(target, low_target, settings)
                     low_code, low_log = self.run_export(low_command, duration, clip, "Low resolution", task_index, task_total)
                     if self.stop_requested.is_set():
                         low_target.unlink(missing_ok=True)
@@ -838,24 +892,25 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
                     ok = ok and low_ok
                     if not low_ok:
                         low_error = low_log[-2000:]
-                elif low_output is not None:
+                elif low_output is not None and not low_only:
                     task_index += 1
                 status = "Complete" if ok else "Failed"
                 self.root.after(0, lambda c=clip, s=status: c.status.set(s))
-                results.append({"source": str(clip.source), "output": str(target), "low_res_output": str(low_target) if low_target else None, "status": status, "error": "" if ok else (low_error or full_log[-2000:])})
+                results.append({"source": str(clip.source), "output": str(target) if target else None, "low_res_output": str(low_target) if low_target else None, "status": status, "error": "" if ok else (low_error or full_log[-2000:])})
                 self.root.after(0, lambda p=task_index / task_total * 100: self.overall.configure(value=p))
                 self.root.after(0, lambda done=task_index, total=task_total: self.summary.config(text=f"Creating videos: {done} of {total} outputs completed"))
                 self.root.after(0, self.refresh_tree)
-            (output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+            if output is not None:
+                (output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
             if low_output is not None:
                 (low_output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
             completed = sum(r["status"] == "Complete" for r in results)
             if self.stop_requested.is_set():
                 self.root.after(0, lambda: self._processing_stopped(completed_outputs, output, low_output))
                 return
-            folders = f"Full resolution:\n{output}"
+            folders = f"Full resolution:\n{output}" if output is not None else ""
             if low_output is not None:
-                folders += f"\n\nLow resolution:\n{low_output}"
+                folders += ("\n\n" if folders else "") + f"Low resolution:\n{low_output}"
             self.root.after(0, lambda: self._processing_finished(completed, len(results), folders))
         except Exception as exc:
             self.root.after(0, lambda message=str(exc): self._processing_failed(message))
@@ -863,8 +918,7 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
     def _processing_finished(self, completed, total, folders):
         self.processing = False
         self.export_started_at = None
-        self.run_button.config(text="CREATE EDITED VIDEOS", style="Primary.TButton")
-        self.run_button.state(["!disabled"])
+        self.set_processing_controls(False)
         self.open_folder_button.state(["!disabled"])
         self.busy_notice.config(text="EXPORT COMPLETE", style="Card.TLabel")
         self.summary.config(text=f"Finished: {completed} of {total} videos created.")
@@ -873,8 +927,7 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
     def _processing_failed(self, message):
         self.processing = False
         self.export_started_at = None
-        self.run_button.config(text="CREATE EDITED VIDEOS", style="Primary.TButton")
-        self.run_button.state(["!disabled"])
+        self.set_processing_controls(False)
         if self.last_output_folder and Path(self.last_output_folder).exists():
             self.open_folder_button.state(["!disabled"])
         self.busy_notice.config(text="EXPORT STOPPED — ERROR", style="Card.TLabel")
@@ -885,14 +938,13 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         self.processing = False
         self.export_started_at = None
         self.active_process = None
-        self.run_button.config(text="CREATE EDITED VIDEOS", style="Primary.TButton")
-        self.run_button.state(["!disabled"])
+        self.set_processing_controls(False)
         self.open_folder_button.state(["!disabled"])
         self.busy_notice.config(text="EXPORT STOPPED BY USER", style="Card.TLabel")
         self.summary.config(text=f"Export stopped. {completed} completed video(s) were kept.")
-        locations = f"Completed files kept in:\n{output}"
+        locations = f"Completed full-resolution files kept in:\n{output}" if output is not None else ""
         if low_output is not None:
-            locations += f"\n\nLow-resolution files:\n{low_output}"
+            locations += ("\n\n" if locations else "") + f"Completed low-resolution files kept in:\n{low_output}"
         messagebox.showinfo(APP_NAME, f"Export stopped.\n\n{completed} completed video(s) were kept. The incomplete current file was removed.\n\n{locations}")
 
 
