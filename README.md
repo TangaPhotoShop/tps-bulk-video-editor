@@ -18,6 +18,10 @@ Enter the first complete output filename once. The app derives the new folder na
 - The built-in before/after preview lets staff choose any selected video and scrub from the beginning to the end before exporting.
 - Logo, audio, correction and sequential naming settings apply to the entire selected batch.
 
+## Low-resolution upload copies
+
+Optionally create a second watermarked batch for uploading. Choose 640x480, 854x480 or 1280x720 and an optional separate destination. The app preserves aspect ratio with padding (no stretching), keeps the same sequential filenames, and writes the copies to a second folder named `<filename-prefix>-low res`.
+
 ## Windows build
 
 Run `build-windows.ps1`. The resulting standalone executable is created in `dist/`.
