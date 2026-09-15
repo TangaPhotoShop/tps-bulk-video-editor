@@ -17,7 +17,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.11"
+APP_VERSION = "1.3.12"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -135,7 +135,16 @@ class TPSVideoEditor:
         self.count_label.pack(side="right")
 
         columns = ("use", "source", "output", "status")
-        self.tree = ttk.Treeview(files, columns=columns, show="headings", selectmode="browse", height=7)
+        tree_frame = ttk.Frame(files, style="Card.TFrame")
+        tree_frame.pack(fill="both", expand=True)
+        tree_scroll_y = ttk.Scrollbar(tree_frame, orient="vertical")
+        tree_scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal")
+        self.tree = ttk.Treeview(
+            tree_frame, columns=columns, show="headings", selectmode="browse", height=7,
+            yscrollcommand=tree_scroll_y.set, xscrollcommand=tree_scroll_x.set,
+        )
+        tree_scroll_y.config(command=self.tree.yview)
+        tree_scroll_x.config(command=self.tree.xview)
         self.tree.heading("use", text="Use")
         self.tree.heading("source", text="Source file")
         self.tree.heading("output", text="New filename")
@@ -144,7 +153,9 @@ class TPSVideoEditor:
         self.tree.column("source", width=260)
         self.tree.column("output", width=285)
         self.tree.column("status", width=120)
-        self.tree.pack(fill="both", expand=True)
+        tree_scroll_y.pack(side="right", fill="y")
+        tree_scroll_x.pack(side="bottom", fill="x")
+        self.tree.pack(side="left", fill="both", expand=True)
         self.tree.bind("<Button-1>", self.toggle_row)
         self.tree.bind("<<TreeviewSelect>>", self.preview_tree_selected)
 
@@ -199,7 +210,7 @@ class TPSVideoEditor:
         self._slider(edits, "White balance", self.white_balance, -1.0, 1.0)
         self._slider(edits, "Warmth", self.warmth, -0.3, 0.3)
         self._slider(edits, "Saturation", self.saturation, 0.0, 2.0)
-        self._slider(edits, "Volume", self.volume, 0.0, 2.0)
+        self._slider(edits, "Volume", self.volume, 0.0, 4.0)
         auto_row = ttk.Frame(edits, style="Card.TFrame")
         auto_row.pack(fill="x", pady=(7, 0))
         ttk.Checkbutton(auto_row, text="Auto Correct", variable=self.auto_correct, command=self._adjustment_changed).pack(side="left")
@@ -298,7 +309,7 @@ Whites — Fine-tunes the brightest white point. Default: 0.00.
 White balance — Corrects an overall blue or amber colour cast. Default: 0.00.
 Warmth — Adds warmer orange tones or cooler blue tones. Default: 0.00.
 Saturation — Controls colour intensity. Default: 1.00.
-Volume — 0 is silent, 1 is original volume, and 2 doubles the level. Default: 1.00.
+Volume — 0 is silent, 1 is original volume, and up to 4 boosts very quiet nights. Boosted audio is peak-limited to reduce clipping. Default: 1.00.
 Auto Correct — Automatically normalises exposure and tonal range through the full video. Default: OFF.
 Auto White Balance — Applies a conservative colour correction through the full video. It is designed to preserve skin tones and resist sudden yellow/green shifts in night footage. Default: OFF.
 Reset adjustments — Restores every correction slider and automatic option to its startup default.
@@ -646,8 +657,10 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
             width, height = (int(v) for v in settings["low_resolution"].split("x"))
             base_filter += f",scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
         volume = f"volume={settings['volume']:.4f}"
+        if settings["volume"] > 1.0:
+            volume += ",alimiter=limit=0.95:attack=5:release=50"
         if not settings["logo_enabled"] and not low_res:
-            return [ffmpeg_path(), "-y", "-i", str(source), "-vf", base_filter, "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target)]
+            return [ffmpeg_path(), "-y", "-i", str(source), "-vf", base_filter, "-af", volume, "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-threads", "0", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target)]
         frame_width = int(settings["low_resolution"].split("x")[0]) if low_res else self.video_dimensions(source)[0]
         logo_fraction = int(settings["logo_size"].rstrip("%")) / 100.0
         logo_width = max(16, round(frame_width * logo_fraction))
@@ -660,7 +673,13 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
             f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=8[shadow];"
             f"[base][shadow]overlay={margin + 5}:{margin + 5}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
         )
-        return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", settings["logo_path"], "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
+        return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", settings["logo_path"], "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-threads", "0", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
+
+    def low_res_from_completed_command(self, source: Path, target: Path, settings):
+        """Resize an already corrected/logoed export without repeating expensive filters."""
+        width, height = (int(v) for v in settings["low_resolution"].split("x"))
+        resize = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
+        return [ffmpeg_path(), "-y", "-i", str(source), "-vf", resize, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "0", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)]
 
     def process_batch(self, output: Path, low_output: Path | None, settings, selected, output_names):
         results = []
@@ -680,7 +699,8 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
                 if ok and low_output is not None:
                     low_target = low_output / output_names[index]
                     self.root.after(0, lambda c=clip: c.status.set("Starting low-res FFmpeg…"))
-                    low_code, low_log = self.run_export(self.command(clip.source, low_target, settings, low_res=True), duration, clip, "Low resolution", task_index, task_total)
+                    low_command = self.low_res_from_completed_command(target, low_target, settings) if settings["logo_enabled"] else self.command(clip.source, low_target, settings, low_res=True)
+                    low_code, low_log = self.run_export(low_command, duration, clip, "Low resolution", task_index, task_total)
                     task_index += 1
                     low_ok = low_code == 0 and low_target.exists()
                     ok = ok and low_ok
