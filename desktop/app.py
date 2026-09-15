@@ -15,6 +15,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
+APP_VERSION = "1.2.1"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -38,7 +39,7 @@ class Clip:
 class TPSVideoEditor:
     def __init__(self, root: Tk):
         self.root = root
-        self.root.title(APP_NAME)
+        self.root.title(f"{APP_NAME} — Version {APP_VERSION}")
         self.root.geometry("1280x820")
         self.root.minsize(1000, 680)
         self.root.configure(bg="#eef3f4")
@@ -91,7 +92,7 @@ class TPSVideoEditor:
     def _build(self):
         header = ttk.Frame(self.root, padding=(20, 14), style="Card.TFrame")
         header.pack(fill="x")
-        ttk.Label(header, text="TPS BULK VIDEO EDITOR", style="Title.TLabel", padding=(14, 8)).pack(side="left")
+        ttk.Label(header, text=f"TPS BULK VIDEO EDITOR  •  VERSION {APP_VERSION}", style="Title.TLabel", padding=(14, 8)).pack(side="left")
         ttk.Label(header, text="SD card → adjust → rename → new output folder", style="Card.TLabel").pack(side="left", padx=18)
 
         body = ttk.Frame(self.root, padding=16)
