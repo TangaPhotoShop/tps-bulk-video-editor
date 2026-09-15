@@ -16,7 +16,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.3"
+APP_VERSION = "1.3.4"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -69,6 +69,7 @@ class TPSVideoEditor:
         self.volume = DoubleVar(value=1.0)
         self.logo_enabled = BooleanVar(value=True)
         self.logo_path = StringVar(value=str(Path(__file__).with_name("assets") / "tps-logo.png"))
+        self.logo_size = StringVar(value="15%")
 
         self._style()
         self._build()
@@ -167,8 +168,11 @@ class TPSVideoEditor:
 
         logo = ttk.LabelFrame(right, text="4. TPS logo")
         logo.pack(fill="x")
-        ttk.Checkbutton(logo, text="Add TPS logo — top left", variable=self.logo_enabled).pack(anchor="w")
-        ttk.Label(logo, text="Fixed at 5% of video width • aspect ratio preserved • drop shadow", style="Card.TLabel", wraplength=340).pack(anchor="w", pady=(4, 0))
+        logo_controls = ttk.Frame(logo, style="Card.TFrame")
+        logo_controls.pack(fill="x")
+        ttk.Checkbutton(logo_controls, text="Add TPS logo — top left", variable=self.logo_enabled).pack(side="left")
+        ttk.Combobox(logo_controls, textvariable=self.logo_size, values=("10%", "15%", "20%"), state="readonly", width=6).pack(side="right")
+        ttk.Label(logo, text="Defaults to 15% • aspect ratio preserved • fixed drop shadow", style="Card.TLabel", wraplength=340).pack(anchor="w", pady=(4, 0))
 
         self.run_button = ttk.Button(right, text="CREATE EDITED VIDEOS", style="Primary.TButton", command=self.start_processing)
         self.run_button.pack(fill="x", pady=(12, 4))
@@ -428,7 +432,8 @@ class TPSVideoEditor:
         base_filter = self.video_filter() + ",scale=520:-2"
         if not self.logo_enabled.get():
             return [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source), "-frames:v", "1", "-vf", base_filter, str(target)]
-        logo_width = 26  # Exactly 5% of the 520px preview frame.
+        logo_fraction = int(self.logo_size.get().rstrip("%")) / 100.0
+        logo_width = max(16, round(520 * logo_fraction))
         margin = 8
         opacity = 0.92
         shadow = 0.70
@@ -449,7 +454,8 @@ class TPSVideoEditor:
         if not self.logo_enabled.get() and not low_res:
             return [ffmpeg_path(), "-y", "-i", str(source), "-vf", base_filter, "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target)]
         frame_width = int(self.low_resolution.get().split("x")[0]) if low_res else self.video_dimensions(source)[0]
-        logo_width = max(16, round(frame_width * 0.05))
+        logo_fraction = int(self.logo_size.get().rstrip("%")) / 100.0
+        logo_width = max(16, round(frame_width * logo_fraction))
         margin = max(8, round(frame_width * 0.0125))
         opacity = 0.82 if low_res else 0.92
         shadow = 0.70
