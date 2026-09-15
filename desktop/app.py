@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.2"
+APP_VERSION = "1.3.3"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -503,6 +504,12 @@ class TPSVideoEditor:
 
 
 if __name__ == "__main__":
+    if os.name == "nt":
+        import ctypes
+        _single_instance = ctypes.windll.kernel32.CreateMutexW(None, False, "Local\\TPSBulkVideoEditorSingleInstance")
+        if ctypes.windll.kernel32.GetLastError() == 183:
+            ctypes.windll.user32.MessageBoxW(None, "TPS Bulk Video Editor is already open.\n\nPlease use the existing window.", APP_NAME, 0x40)
+            sys.exit(0)
     root = Tk()
     TPSVideoEditor(root)
     root.mainloop()
