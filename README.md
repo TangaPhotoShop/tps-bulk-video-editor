@@ -1,6 +1,6 @@
 # TPS Bulk Video Editor
 
-Current Windows release: **Version 1.3.2**. The installed version is displayed in the application title bar and main header.
+Current Windows release: **Version 1.3.3**. The installed version is displayed in the application title bar and main header.
 
 Windows desktop software for Tangalooma Photo Shop. It reads tour videos directly from an SD card or local folder, applies bulk video/audio adjustments, overlays the TPS logo, renames clips and writes MP4 files into a newly created output folder. Original source files are never changed.
 
@@ -29,6 +29,8 @@ Optionally create a second watermarked batch for uploading. Choose 640x480, 854x
 Run `build-windows.ps1`. The resulting Windows installer is created in `dist/`. It uses a stable application identity so future installers detect the existing installation, close the running app, remove the previous executable and replace it with the new release. The installer creates Start menu and optional desktop shortcuts using the TPS video-camera icon.
 
 The upgrade also clears the previous application folder and removes the specifically named pre-installer portable executable from the current user's Desktop and Downloads. It does not touch videos, export folders or downloaded setup files.
+
+Only one editor window can run at a time. When an earlier installed version is detected, Setup asks for confirmation before removing it and installing the replacement.
 
 ## Railway
 
