@@ -15,7 +15,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.3.2"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -68,10 +68,6 @@ class TPSVideoEditor:
         self.volume = DoubleVar(value=1.0)
         self.logo_enabled = BooleanVar(value=True)
         self.logo_path = StringVar(value=str(Path(__file__).with_name("assets") / "tps-logo.png"))
-        self.logo_width = DoubleVar(value=18.0)
-        self.logo_opacity = DoubleVar(value=0.92)
-        self.logo_margin = IntVar(value=28)
-        self.shadow = DoubleVar(value=0.70)
 
         self._style()
         self._build()
@@ -170,14 +166,8 @@ class TPSVideoEditor:
 
         logo = ttk.LabelFrame(right, text="4. TPS logo")
         logo.pack(fill="x")
-        ttk.Checkbutton(logo, text="Add logo top left", variable=self.logo_enabled).pack(anchor="w")
-        logo_row = ttk.Frame(logo, style="Card.TFrame")
-        logo_row.pack(fill="x", pady=4)
-        ttk.Entry(logo_row, textvariable=self.logo_path).pack(side="left", fill="x", expand=True)
-        ttk.Button(logo_row, text="Choose", command=self.choose_logo).pack(side="left", padx=(6, 0))
-        self._slider(logo, "Width %", self.logo_width, 8, 30)
-        self._slider(logo, "Opacity", self.logo_opacity, 0.25, 1.0)
-        self._slider(logo, "Shadow", self.shadow, 0.0, 1.0)
+        ttk.Checkbutton(logo, text="Add TPS logo — top left", variable=self.logo_enabled).pack(anchor="w")
+        ttk.Label(logo, text="Fixed at 5% of video width • aspect ratio preserved • drop shadow", style="Card.TLabel", wraplength=340).pack(anchor="w", pady=(4, 0))
 
         self.run_button = ttk.Button(right, text="CREATE EDITED VIDEOS", style="Primary.TButton", command=self.start_processing)
         self.run_button.pack(fill="x", pady=(12, 4))
@@ -225,11 +215,6 @@ class TPSVideoEditor:
         path = filedialog.askdirectory(title="Choose where the low-resolution folder will be created")
         if path:
             self.low_destination.set(path)
-
-    def choose_logo(self):
-        path = filedialog.askopenfilename(title="Choose transparent logo", filetypes=[("PNG image", "*.png")])
-        if path:
-            self.logo_path.set(path)
 
     def load_clips(self, folder: Path):
         paths = sorted(p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS)
@@ -377,6 +362,11 @@ class TPSVideoEditor:
         hours, minutes, seconds = match.groups()
         return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
+    def video_dimensions(self, source: Path) -> tuple[int, int]:
+        proc = self.run_hidden([ffmpeg_path(), "-i", str(source)], capture_output=True, text=True)
+        match = re.search(r"Video:.*?\b(\d{2,5})x(\d{2,5})\b", proc.stderr)
+        return (int(match.group(1)), int(match.group(2))) if match else (1920, 1080)
+
     @staticmethod
     def run_hidden(command, **kwargs):
         # Prevent FFmpeg from opening a black console window in the Windows GUI app.
@@ -437,15 +427,15 @@ class TPSVideoEditor:
         base_filter = self.video_filter() + ",scale=520:-2"
         if not self.logo_enabled.get():
             return [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source), "-frames:v", "1", "-vf", base_filter, str(target)]
-        width = self.logo_width.get() / 100.0
-        margin = max(8, int(self.logo_margin.get() * 520 / 1920))
-        opacity = self.logo_opacity.get()
-        shadow = self.shadow.get()
+        logo_width = 26  # Exactly 5% of the 520px preview frame.
+        margin = 8
+        opacity = 0.92
+        shadow = 0.70
         graph = (
             f"[0:v]{base_filter}[base];[1:v]format=rgba,colorchannelmixer=aa={opacity:.3f}[rawlogo];"
-            f"[rawlogo][base]scale2ref=w=main_w*{width:.4f}:h=-1[logo][base2];"
+            f"[rawlogo]scale=w={logo_width}:h=-1:force_original_aspect_ratio=decrease,setsar=1[logo];"
             f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=5[shadow];"
-            f"[base2][shadow]overlay={margin + 3}:{margin + 3}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
+            f"[base][shadow]overlay={margin + 3}:{margin + 3}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
         )
         return [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source), "-loop", "1", "-i", self.logo_path.get(), "-filter_complex", graph, "-map", "[outv]", "-frames:v", "1", str(target)]
 
@@ -457,22 +447,22 @@ class TPSVideoEditor:
         volume = f"volume={self.volume.get():.4f}"
         if not self.logo_enabled.get() and not low_res:
             return [ffmpeg_path(), "-y", "-i", str(source), "-vf", base_filter, "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target)]
-        width = self.logo_width.get() / 100.0
-        margin = self.logo_margin.get()
-        opacity = min(self.logo_opacity.get(), 0.82) if low_res else self.logo_opacity.get()
-        shadow = self.shadow.get()
+        frame_width = int(self.low_resolution.get().split("x")[0]) if low_res else self.video_dimensions(source)[0]
+        logo_width = max(16, round(frame_width * 0.05))
+        margin = max(8, round(frame_width * 0.0125))
+        opacity = 0.82 if low_res else 0.92
+        shadow = 0.70
         graph = (
             f"[0:v]{base_filter}[base];"
             f"[1:v]format=rgba,colorchannelmixer=aa={opacity:.3f},scale=iw*main_w/iw*{width:.4f}:-1[logo];"
             f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=8[shadow];"
             f"[base][shadow]overlay={margin + 5}:{margin + 5}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
         )
-        # scale2ref allows logo width to follow each source's original resolution.
         graph = (
             f"[0:v]{base_filter}[base];[1:v]format=rgba,colorchannelmixer=aa={opacity:.3f}[rawlogo];"
-            f"[rawlogo][base]scale2ref=w=main_w*{width:.4f}:h=-1[logo][base2];"
+            f"[rawlogo]scale=w={logo_width}:h=-1:force_original_aspect_ratio=decrease,setsar=1[logo];"
             f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=8[shadow];"
-            f"[base2][shadow]overlay={margin + 5}:{margin + 5}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
+            f"[base][shadow]overlay={margin + 5}:{margin + 5}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
         )
         return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", self.logo_path.get(), "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
 
