@@ -17,7 +17,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.9"
+APP_VERSION = "1.3.10"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
