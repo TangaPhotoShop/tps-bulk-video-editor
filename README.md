@@ -1,6 +1,6 @@
 # TPS Bulk Video Editor
 
-Current Windows release: **Version 1.3.12**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
+Current Windows release: **Version 1.3.13**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
 
 Windows desktop software for Tangalooma Photo Shop. It reads tour videos directly from an SD card or local folder, applies bulk video/audio adjustments, overlays the TPS logo, renames clips and writes MP4 files into a newly created output folder. Original source files are never changed.
 
@@ -14,7 +14,7 @@ Enter the first complete output filename once. The app derives the new folder na
 
 ## Batch correction and preview
 
-- **Auto Correct** normalizes exposure and tonal range through the full video.
+- **Auto Exposure** analyses exposure continuously and smooths changes between neighbouring frames to avoid flicker and brightness pumping.
 - **Auto White Balance** uses a conservative grey-edge correction that preserves skin tones and avoids strong yellow/green shifts in night footage.
 - Manual controls cover white balance, exposure, contrast, shadows, highlights, blacks, whites, warmth, saturation and volume.
 - Automatic options and manual sliders apply to every frame of every selected clip.
@@ -24,6 +24,8 @@ Enter the first complete output filename once. The app derives the new folder na
 Version 1.3.11 fixed the Windows processing handoff that could leave a job at 0%, fixed full-resolution logo command generation, and made processing failures visible.
 
 Version 1.3.12 speeds up full-resolution encoding while retaining high-quality output, uses all available FFmpeg CPU threads, and creates the low-resolution copy from the completed edited master when possible instead of repeating every correction. The file list now has vertical and horizontal scrollbars. Volume can be boosted to 4× for quiet nights, with a peak limiter above the original level to reduce clipping.
+
+Version 1.3.13 adds a prominent busy export notice with the current file, stage and percentage. Staff can stop an export after confirming; completed videos remain in place and the incomplete current output is removed safely.
 
 ## Low-resolution upload copies
 
