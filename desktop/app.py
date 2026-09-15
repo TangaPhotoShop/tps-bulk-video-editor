@@ -54,6 +54,9 @@ class TPSVideoEditor:
         self.start_number = IntVar(value=1)
         self.folder_name = StringVar(value="TPS Edited Videos")
         self.first_filename = StringVar(value=f"{self.job_date.get()}-DOL-DM-0001.MP4")
+        self.low_res_enabled = BooleanVar(value=False)
+        self.low_destination = StringVar()
+        self.low_resolution = StringVar(value="640x480")
         self.auto_correct = BooleanVar(value=False)
         self.auto_white_balance = BooleanVar(value=False)
         self.exposure = DoubleVar(value=0.0)
@@ -137,6 +140,15 @@ class TPSVideoEditor:
         dest_row.pack(fill="x", pady=4)
         ttk.Entry(dest_row, textvariable=self.destination).pack(side="left", fill="x", expand=True)
         ttk.Button(dest_row, text="Destination", command=self.choose_destination).pack(side="left", padx=(6, 0))
+        low_toggle = ttk.Frame(naming, style="Card.TFrame")
+        low_toggle.pack(fill="x", pady=(7, 2))
+        ttk.Checkbutton(low_toggle, text="Also create low-res watermarked copies", variable=self.low_res_enabled).pack(side="left")
+        ttk.Combobox(low_toggle, textvariable=self.low_resolution, values=("640x480", "854x480", "1280x720"), state="readonly", width=10).pack(side="right")
+        low_row = ttk.Frame(naming, style="Card.TFrame")
+        low_row.pack(fill="x", pady=3)
+        ttk.Entry(low_row, textvariable=self.low_destination).pack(side="left", fill="x", expand=True)
+        ttk.Button(low_row, text="Low-res destination", command=self.choose_low_destination).pack(side="left", padx=(6, 0))
+        ttk.Label(naming, text="Folder: filename prefix + -low res", style="Card.TLabel").pack(anchor="w")
 
         edits = ttk.LabelFrame(right, text="3. Bulk adjustments")
         edits.pack(fill="x", pady=10)
@@ -197,12 +209,21 @@ class TPSVideoEditor:
             self.source.set(path)
             if not self.destination.get():
                 self.destination.set(str(Path.home() / "Videos"))
+            if not self.low_destination.get():
+                self.low_destination.set(self.destination.get())
             self.load_clips(Path(path))
 
     def choose_destination(self):
         path = filedialog.askdirectory(title="Choose where the new folder will be created")
         if path:
             self.destination.set(path)
+            if not self.low_destination.get():
+                self.low_destination.set(path)
+
+    def choose_low_destination(self):
+        path = filedialog.askdirectory(title="Choose where the low-resolution folder will be created")
+        if path:
+            self.low_destination.set(path)
 
     def choose_logo(self):
         path = filedialog.askopenfilename(title="Choose transparent logo", filetypes=[("PNG image", "*.png")])
@@ -347,7 +368,9 @@ class TPSVideoEditor:
             return "Select at least one video."
         if not self.destination.get():
             return "Choose an output destination."
-        if self.logo_enabled.get() and not Path(self.logo_path.get()).exists():
+        if self.low_res_enabled.get() and not (self.low_destination.get() or self.destination.get()):
+            return "Choose a destination for the low-resolution copies."
+        if (self.logo_enabled.get() or self.low_res_enabled.get()) and not Path(self.logo_path.get()).exists():
             return "Choose the TPS logo PNG, or turn the logo off."
         return None
 
@@ -361,9 +384,16 @@ class TPSVideoEditor:
         if output.exists() and any(output.iterdir()):
             output = output.with_name(f"{output.name} {datetime.now():%Y-%m-%d %H%M%S}")
         output.mkdir(parents=True, exist_ok=False)
+        low_output = None
+        if self.low_res_enabled.get():
+            low_parent = Path(self.low_destination.get() or self.destination.get())
+            low_output = low_parent / f"{clean_code(self.folder_name.get(), 'TPS-Edited-Videos')}-low res"
+            if low_output.exists() and any(low_output.iterdir()):
+                low_output = low_output.with_name(f"{low_output.name} {datetime.now():%Y-%m-%d %H%M%S}")
+            low_output.mkdir(parents=True, exist_ok=False)
         self.processing = True
         self.run_button.state(["disabled"])
-        threading.Thread(target=self.process_batch, args=(output,), daemon=True).start()
+        threading.Thread(target=self.process_batch, args=(output, low_output), daemon=True).start()
 
     def video_filter(self):
         brightness = max(-1.0, min(1.0, self.exposure.get() / 2.0))
@@ -395,14 +425,17 @@ class TPSVideoEditor:
         )
         return [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source), "-loop", "1", "-i", self.logo_path.get(), "-filter_complex", graph, "-map", "[outv]", "-frames:v", "1", str(target)]
 
-    def command(self, source: Path, target: Path):
+    def command(self, source: Path, target: Path, low_res: bool = False):
         base_filter = self.video_filter()
+        if low_res:
+            width, height = (int(v) for v in self.low_resolution.get().split("x"))
+            base_filter += f",scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
         volume = f"volume={self.volume.get():.4f}"
-        if not self.logo_enabled.get():
+        if not self.logo_enabled.get() and not low_res:
             return [ffmpeg_path(), "-y", "-i", str(source), "-vf", base_filter, "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target)]
         width = self.logo_width.get() / 100.0
         margin = self.logo_margin.get()
-        opacity = self.logo_opacity.get()
+        opacity = min(self.logo_opacity.get(), 0.82) if low_res else self.logo_opacity.get()
         shadow = self.shadow.get()
         graph = (
             f"[0:v]{base_filter}[base];"
@@ -419,7 +452,7 @@ class TPSVideoEditor:
         )
         return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", self.logo_path.get(), "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
 
-    def process_batch(self, output: Path):
+    def process_batch(self, output: Path, low_output: Path | None = None):
         selected = self.selected_clips()
         results = []
         for index, clip in enumerate(selected):
@@ -428,17 +461,31 @@ class TPSVideoEditor:
             self.root.after(0, self.refresh_tree)
             proc = subprocess.run(self.command(clip.source, target), capture_output=True, text=True)
             ok = proc.returncode == 0 and target.exists()
+            low_target = None
+            low_error = ""
+            if ok and low_output is not None:
+                low_target = low_output / self.output_name(index)
+                low_proc = subprocess.run(self.command(clip.source, low_target, low_res=True), capture_output=True, text=True)
+                low_ok = low_proc.returncode == 0 and low_target.exists()
+                ok = ok and low_ok
+                if not low_ok:
+                    low_error = low_proc.stderr[-2000:]
             status = "Complete" if ok else "Failed"
             clip.status.set(status)
-            results.append({"source": str(clip.source), "output": str(target), "status": status, "error": "" if ok else proc.stderr[-2000:]})
+            results.append({"source": str(clip.source), "output": str(target), "low_res_output": str(low_target) if low_target else None, "status": status, "error": "" if ok else (low_error or proc.stderr[-2000:])})
             self.root.after(0, lambda p=(index + 1) / len(selected) * 100: self.overall.configure(value=p))
             self.root.after(0, self.refresh_tree)
         (output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+        if low_output is not None:
+            (low_output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         completed = sum(r["status"] == "Complete" for r in results)
         self.processing = False
         self.root.after(0, lambda: self.run_button.state(["!disabled"]))
-        self.root.after(0, lambda: self.summary.config(text=f"Finished: {completed} of {len(results)} videos created in {output}"))
-        self.root.after(0, lambda: messagebox.showinfo(APP_NAME, f"Finished.\n\n{completed} of {len(results)} videos were created.\n\nOutput folder:\n{output}"))
+        folders = f"Full resolution:\n{output}"
+        if low_output is not None:
+            folders += f"\n\nLow resolution:\n{low_output}"
+        self.root.after(0, lambda: self.summary.config(text=f"Finished: {completed} of {len(results)} videos created."))
+        self.root.after(0, lambda: messagebox.showinfo(APP_NAME, f"Finished.\n\n{completed} of {len(results)} videos were created.\n\n{folders}"))
 
 
 if __name__ == "__main__":
