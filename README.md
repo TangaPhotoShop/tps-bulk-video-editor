@@ -1,6 +1,6 @@
 # TPS Bulk Video Editor
 
-Current Windows release: **Version 1.3.10**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
+Current Windows release: **Version 1.3.11**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
 
 Windows desktop software for Tangalooma Photo Shop. It reads tour videos directly from an SD card or local folder, applies bulk video/audio adjustments, overlays the TPS logo, renames clips and writes MP4 files into a newly created output folder. Original source files are never changed.
 
@@ -16,10 +16,12 @@ Enter the first complete output filename once. The app derives the new folder na
 
 - **Auto Correct** normalizes exposure and tonal range through the full video.
 - **Auto White Balance** uses a conservative grey-edge correction that preserves skin tones and avoids strong yellow/green shifts in night footage.
-- **Adjustment presets** provide one-click Neutral, Dolphin night, Low-light lift, Warm sunset and Bright day starting points while keeping every slider available for fine tuning.
-- Both options work with manual sliders and apply to every frame of every selected clip.
-- The built-in before/after preview refreshes automatically as staff move any adjustment slider, choose a preset, toggle automatic correction or change the logo setting.
+- Manual controls cover white balance, exposure, contrast, shadows, highlights, blacks, whites, warmth, saturation and volume.
+- Automatic options and manual sliders apply to every frame of every selected clip.
+- The permanent before/after preview is embedded in the main window and refreshes automatically as staff move a slider, toggle automatic correction, select a video or move through its timeline.
 - Logo, audio, correction and sequential naming settings apply to the entire selected batch.
+
+Version 1.3.11 also fixes the Windows processing handoff that could leave a job at 0%, fixes full-resolution logo command generation, and reports processing failures visibly instead of silently stopping.
 
 ## Low-resolution upload copies
 
