@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import statistics
 import os
 import re
 import shutil
@@ -50,6 +51,7 @@ class Clip:
     full_size: StringVar
     low_size: StringVar
     current_resolution: StringVar
+    quality_check: StringVar
 
 
 class TPSVideoEditor:
@@ -157,7 +159,7 @@ class TPSVideoEditor:
         self.count_label = ttk.Label(actions, text="0 videos", style="Card.TLabel")
         self.count_label.pack(side="right")
 
-        columns = ("item", "use", "source", "current_resolution", "original_size", "output", "full_resolution", "new_size", "low_resolution", "low_size", "status")
+        columns = ("item", "use", "source", "quality_check", "current_resolution", "original_size", "output", "full_resolution", "new_size", "low_resolution", "low_size", "status")
         tree_frame = ttk.Frame(files, style="Card.TFrame")
         tree_frame.pack(fill="both", expand=True)
         tree_scroll_y = ttk.Scrollbar(tree_frame, orient="vertical")
@@ -171,6 +173,7 @@ class TPSVideoEditor:
         self.tree.heading("item", text="Item")
         self.tree.heading("use", text="Use")
         self.tree.heading("source", text="Source file")
+        self.tree.heading("quality_check", text="Auto check")
         self.tree.heading("current_resolution", text="Current resolution")
         self.tree.heading("original_size", text="Original size")
         self.tree.heading("output", text="New filename")
@@ -182,6 +185,7 @@ class TPSVideoEditor:
         self.tree.column("item", width=45, anchor="center")
         self.tree.column("use", width=52, anchor="center")
         self.tree.column("source", width=220)
+        self.tree.column("quality_check", width=145, anchor="center")
         self.tree.column("current_resolution", width=115, anchor="center")
         self.tree.column("original_size", width=90, anchor="e")
         self.tree.column("output", width=250)
@@ -352,6 +356,7 @@ class TPSVideoEditor:
 VIDEOS AND NAMING
 
 Item — Numbers every source video 1, 2, 3 and so on, making it easy to count clips in a large folder.
+Auto check — Samples the source in the background and shows OK, Dark, Colour/WB or both. After export, it checks the completed master again and changes the label to Export. A warning means review the clip in the preview; it does not automatically reject or alter it.
 Current resolution — Detected from each source video in the background while you continue working.
 Full-res output — Shows the source resolution that will be preserved, or Skipped when low-resolution-only mode is selected.
 Low-res output — Shows the selected upload resolution, or Not selected when low-resolution copies are off.
@@ -438,7 +443,7 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
 
     def load_clips(self, folder: Path):
         paths = sorted(p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS)
-        self.clips = [Clip(p, BooleanVar(value=True), StringVar(value="Ready"), DoubleVar(value=0), StringVar(value="—"), StringVar(value="—"), StringVar(value="Reading…")) for p in paths]
+        self.clips = [Clip(p, BooleanVar(value=True), StringVar(value="Ready"), DoubleVar(value=0), StringVar(value="—"), StringVar(value="—"), StringVar(value="Reading…"), StringVar(value="Checking…")) for p in paths]
         names = [p.name for p in paths]
         self.preview_chooser["values"] = names
         self.preview_selected_name.set(names[0] if names else "")
@@ -454,13 +459,45 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
                 resolution = f"{width}×{height}"
             except Exception:
                 resolution = "Unavailable"
-            self.root.after(0, self.set_clip_resolution, clip, resolution)
+            quality = self.video_quality_check(clip.source)
+            self.root.after(0, self.set_clip_media_info, clip, resolution, quality)
 
-    def set_clip_resolution(self, clip, resolution):
+    def set_clip_media_info(self, clip, resolution, quality):
         # Ignore results from an older scan if staff have already opened another folder.
         if clip in self.clips:
             clip.current_resolution.set(resolution)
+            clip.quality_check.set(quality)
             self.refresh_tree()
+
+    def video_quality_check(self, source: Path) -> str:
+        """Sparsely sample luminance/chroma and return a conservative review flag."""
+        command = [
+            ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-i", str(source),
+            "-vf", "fps=1/5,scale=160:-2,signalstats,metadata=print:file=-",
+            "-frames:v", "30", "-f", "null", "-",
+        ]
+        try:
+            proc = self.run_hidden(command, capture_output=True, text=True)
+            report = (proc.stdout or "") + "\n" + (proc.stderr or "")
+            y_values = [float(value) for value in re.findall(r"lavfi\.signalstats\.YAVG=([\d.]+)", report)]
+            u_values = [float(value) for value in re.findall(r"lavfi\.signalstats\.UAVG=([\d.]+)", report)]
+            v_values = [float(value) for value in re.findall(r"lavfi\.signalstats\.VAVG=([\d.]+)", report)]
+            if not y_values:
+                return "Check unavailable"
+            warnings = []
+            median_y = statistics.median(y_values)
+            dark_share = sum(value < 42 for value in y_values) / len(y_values)
+            if median_y < 52 or dark_share >= 0.5:
+                warnings.append("Dark")
+            if u_values and v_values:
+                median_u = statistics.median(u_values)
+                median_v = statistics.median(v_values)
+                chroma_cast = ((median_u - 128) ** 2 + (median_v - 128) ** 2) ** 0.5
+                if chroma_cast > 15:
+                    warnings.append("Colour/WB")
+            return "⚠ " + " + ".join(warnings) if warnings else "✓ OK"
+        except Exception:
+            return "Check unavailable"
 
     def filename_parts(self):
         date_text = self.job_date.get().strip().upper()
@@ -511,7 +548,7 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             else:
                 full_resolution = "—"
                 low_resolution = "—"
-            self.tree.insert("", "end", iid=str(index), values=(index + 1, "✓" if clip.selected.get() else "", clip.source.name, clip.current_resolution.get(), original_size, name, full_resolution, clip.full_size.get(), low_resolution, clip.low_size.get(), clip.status.get()))
+            self.tree.insert("", "end", iid=str(index), values=(index + 1, "✓" if clip.selected.get() else "", clip.source.name, clip.quality_check.get(), clip.current_resolution.get(), original_size, name, full_resolution, clip.full_size.get(), low_resolution, clip.low_size.get(), clip.status.get()))
         self.count_label.config(text=f"{selected_index} of {len(self.clips)} videos selected")
 
     def toggle_row(self, event):
@@ -912,6 +949,9 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
                         completed_outputs += 1
                         full_size = human_size(target.stat().st_size)
                         self.root.after(0, lambda c=clip, s=full_size: c.full_size.set(s))
+                        self.root.after(0, lambda i=index + 1, total=len(selected): self.busy_notice.config(text=f"BUSY — QUALITY CHECK {i} OF {total}", style="Busy.TLabel"))
+                        export_check = self.video_quality_check(target)
+                        self.root.after(0, lambda c=clip, q=export_check: c.quality_check.set(f"Export: {q}"))
                 low_target = None
                 low_error = ""
                 if ok and low_output is not None:
@@ -929,6 +969,10 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
                         completed_outputs += 1
                         low_size = human_size(low_target.stat().st_size)
                         self.root.after(0, lambda c=clip, s=low_size: c.low_size.set(s))
+                        if low_only:
+                            self.root.after(0, lambda i=index + 1, total=len(selected): self.busy_notice.config(text=f"BUSY — QUALITY CHECK {i} OF {total}", style="Busy.TLabel"))
+                            export_check = self.video_quality_check(low_target)
+                            self.root.after(0, lambda c=clip, q=export_check: c.quality_check.set(f"Export: {q}"))
                     ok = ok and low_ok
                     if not low_ok:
                         low_error = low_log[-2000:]
