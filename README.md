@@ -1,16 +1,16 @@
 # TPS Bulk Video Editor
 
-Current Windows release: **Version 1.3.15**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
+Current Windows release: **Version 1.3.16**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
 
 Windows desktop software for Tangalooma Photo Shop. It reads tour videos directly from an SD card or local folder, applies bulk video/audio adjustments, overlays the TPS logo, renames clips and writes MP4 files into a newly created output folder. Original source files are never changed.
 
 ## Filename pattern
 
-`DD-MMM-YYYY-ACTIVITY-PHOTOGRAPHER-0001.MP4`
+`DD-MMM-YYYY-DOL-PHOTOGRAPHER-0001.MP4`
 
 Example: `13-SEP-2026-DOL-DM-0001.MP4`
 
-Enter the first complete output filename once. The app derives the new folder name from its prefix and increments the trailing number for every selected video, preserving three- or four-digit numbering.
+Enter the date, photographer initials and starting number. The activity is locked to DOL, and the app generates the filename and matching folder name automatically. Every selected video receives the next four-digit number.
 
 ## Batch correction and preview
 
@@ -31,9 +31,11 @@ Version 1.3.14 displays the original, full-resolution and low-resolution file si
 
 Version 1.3.15 keeps batch cancellation permanently visible: the main Create Edited Videos button becomes a red Cancel Batch Export button while processing. Cancellation requires confirmation, preserves completed outputs, removes the incomplete current file and then restores the editor for adjustment and restart.
 
+Version 1.3.16 adds a low-resolution watermarked-only export mode that skips the full-resolution batch. It also replaces free-form filenames with validated Date, fixed DOL activity, Photographer Initials and Starting Number controls, generating locked sequential names such as `15-SEP-2026-DOL-SW-0001.MP4`.
+
 ## Low-resolution upload copies
 
-Optionally create a second watermarked batch for uploading. Choose 640x480, 854x480 or 1280x720 and an optional separate destination. The app preserves aspect ratio with padding (no stretching), keeps the same sequential filenames, and writes the copies to a second folder named `<filename-prefix>-low res`.
+Optionally create a second watermarked batch for uploading, or choose low-resolution only to skip the full-resolution batch. Choose 640x480, 854x480 or 1280x720 and an optional separate destination. The app preserves aspect ratio with padding (no stretching), keeps the same sequential filenames, and writes the copies to a folder named `<filename-prefix>-low res`.
 
 ## Windows build
 
