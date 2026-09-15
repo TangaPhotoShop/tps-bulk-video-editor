@@ -1,6 +1,6 @@
 # TPS Bulk Video Editor
 
-Current Windows release: **Version 1.3.14**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
+Current Windows release: **Version 1.3.15**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
 
 Windows desktop software for Tangalooma Photo Shop. It reads tour videos directly from an SD card or local folder, applies bulk video/audio adjustments, overlays the TPS logo, renames clips and writes MP4 files into a newly created output folder. Original source files are never changed.
 
@@ -28,6 +28,8 @@ Version 1.3.12 speeds up full-resolution encoding while retaining high-quality o
 Version 1.3.13 adds a prominent busy export notice with the current file, stage and percentage. Staff can stop an export after confirming; completed videos remain in place and the incomplete current output is removed safely.
 
 Version 1.3.14 displays the original, full-resolution and low-resolution file sizes, updating output sizes while each file is written. It adds a 0–100 export-quality control (85% default), estimated time remaining, a destination free-space check and an Open Output Folder button.
+
+Version 1.3.15 keeps batch cancellation permanently visible: the main Create Edited Videos button becomes a red Cancel Batch Export button while processing. Cancellation requires confirmation, preserves completed outputs, removes the incomplete current file and then restores the editor for adjustment and restart.
 
 ## Low-resolution upload copies
 
