@@ -35,7 +35,7 @@ Version 1.3.16 adds a low-resolution watermarked-only export mode that skips the
 
 ## Low-resolution upload copies
 
-Optionally create a second watermarked batch for uploading, or choose low-resolution only to skip the full-resolution batch. Choose 640x480, 854x480 or 1280x720 and an optional separate destination. The app preserves aspect ratio with padding (no stretching), keeps the same sequential filenames, and writes the copies to a folder such as `15-SEP-2026-DOL_SW-LOW-RES`.
+Optionally create a second watermarked batch for uploading, or choose low-resolution only to skip the full-resolution batch. Choose 640x480, 854x480 or 1280x720 and an optional separate destination. The app preserves aspect ratio with padding (no stretching), keeps the same sequential filenames, and writes the copies to a folder such as `15-SEP-2026-DOL_SW-LOW-RES`. A default-on checkbox adds “Copyright Tangalooma Photo Shop” diagonally across low-resolution videos at 50% opacity; it does not affect full-resolution masters.
 
 ## Windows build
 
