@@ -1,5 +1,5 @@
 #define MyAppName "TPS Bulk Video Editor"
-#define MyAppVersion "1.3.2"
+#define MyAppVersion "1.3.3"
 #define MyAppPublisher "Tangalooma Photo Shop"
 #define MyAppExeName "TPS Bulk Video Editor.exe"
 
@@ -21,6 +21,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=force
+CloseApplicationsFilter=TPS Bulk Video Editor.exe
 RestartApplications=no
 UsePreviousAppDir=yes
 DisableProgramGroupPage=yes
@@ -44,6 +45,25 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
 
 [Code]
+var
+  ReplacementConfirmed: Boolean;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID = wpReady) and
+     FileExists(AddBackslash(WizardDirValue) + '{#MyAppExeName}') and
+     (not ReplacementConfirmed) then
+  begin
+    Result := MsgBox(
+      'An earlier TPS Bulk Video Editor installation was found.' + #13#10 + #13#10 +
+      'Remove the previous version and install Version {#MyAppVersion}?',
+      mbConfirmation, MB_YESNO) = IDYES;
+    if Result then
+      ReplacementConfirmed := True;
+  end;
+end;
+
 procedure RemoveOldPortableCopies;
 var
   UserProfile: String;
