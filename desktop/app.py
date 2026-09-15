@@ -17,7 +17,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.5"
+APP_VERSION = "1.3.6"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -65,6 +65,9 @@ class TPSVideoEditor:
         self.auto_white_balance = BooleanVar(value=False)
         self.exposure = DoubleVar(value=0.0)
         self.contrast = DoubleVar(value=1.0)
+        self.shadows = DoubleVar(value=0.0)
+        self.whites = DoubleVar(value=0.0)
+        self.highlights = DoubleVar(value=0.0)
         self.warmth = DoubleVar(value=0.0)
         self.red_balance = DoubleVar(value=1.0)
         self.blue_balance = DoubleVar(value=1.0)
@@ -163,6 +166,9 @@ class TPSVideoEditor:
         edits.pack(fill="x", pady=10)
         self._slider(edits, "Exposure", self.exposure, -1.5, 1.5)
         self._slider(edits, "Contrast", self.contrast, 0.7, 1.4)
+        self._slider(edits, "Shadows", self.shadows, -1.0, 1.0)
+        self._slider(edits, "Whites", self.whites, -1.0, 1.0)
+        self._slider(edits, "Highlights", self.highlights, -1.0, 1.0)
         self._slider(edits, "Warmth", self.warmth, -0.3, 0.3)
         self._slider(edits, "Red balance", self.red_balance, 0.8, 1.2)
         self._slider(edits, "Blue balance", self.blue_balance, 0.8, 1.2)
@@ -171,6 +177,13 @@ class TPSVideoEditor:
         auto_row.pack(fill="x", pady=(7, 0))
         ttk.Checkbutton(auto_row, text="Auto Correct", variable=self.auto_correct).pack(side="left")
         ttk.Checkbutton(auto_row, text="Auto White Balance", variable=self.auto_white_balance).pack(side="left", padx=8)
+        exposure_presets = ttk.Frame(edits, style="Card.TFrame")
+        exposure_presets.pack(fill="x", pady=(7, 0))
+        ttk.Label(exposure_presets, text="Exposure presets", style="Card.TLabel").pack(side="left")
+        ttk.Button(exposure_presets, text="Dark +", command=lambda: self.set_exposure_preset(0.35)).pack(side="left", padx=(6, 2))
+        ttk.Button(exposure_presets, text="Lift", command=lambda: self.set_exposure_preset(0.15)).pack(side="left", padx=2)
+        ttk.Button(exposure_presets, text="Normal", command=lambda: self.set_exposure_preset(0.0)).pack(side="left", padx=2)
+        ttk.Button(exposure_presets, text="Bright -", command=lambda: self.set_exposure_preset(-0.20)).pack(side="left", padx=2)
         preset_row = ttk.Frame(edits, style="Card.TFrame")
         preset_row.pack(fill="x", pady=(7, 0))
         ttk.Button(preset_row, text="Neutral", command=self.neutral).pack(side="left")
@@ -249,12 +262,16 @@ BULK ADJUSTMENTS
 
 Exposure — Brightens or darkens the image. Default: 0.00.
 Contrast — Changes the difference between dark and bright areas. Default: 1.00.
+Shadows — Fine-tunes detail in darker areas without moving the main exposure. Default: 0.00.
+Whites — Fine-tunes the brightest white point. Default: 0.00.
+Highlights — Fine-tunes detail in bright areas. Default: 0.00.
 Warmth — Adds warmer orange tones or cooler blue tones. Default: 0.00.
 Red balance — Adjusts the red channel. Default: 1.00.
 Blue balance — Adjusts the blue channel. Default: 1.00.
 Volume — 0 is silent, 1 is original volume, and 2 doubles the level. Default: 1.00.
 Auto Correct — Automatically normalises exposure and tonal range through the full video. Default: OFF.
 Auto White Balance — Automatically corrects colour balance through the full video. Default: OFF.
+Exposure presets — Dark + strongly lifts a dark video; Lift makes a smaller increase; Normal returns exposure to 0; Bright - reduces an overly bright video.
 Neutral — Restores all manual sliders to their defaults.
 Dolphin warm — Applies the TPS warm dolphin preset: exposure 0.08, contrast 1.05, warmth 0.06, red 1.03, blue 0.97 and volume 1.00.
 
@@ -273,7 +290,7 @@ The status column shows the current file, output stage and percentage. The lower
 
 STARTUP DEFAULTS — VERSION {APP_VERSION}
 
-Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Warmth 0.00 | Red 1.00 | Blue 1.00 | Volume 1.00 | Low-resolution copies OFF | TPS logo ON | Logo size 15%
+Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Whites 0.00 | Highlights 0.00 | Warmth 0.00 | Red 1.00 | Blue 1.00 | Volume 1.00 | Low-resolution copies OFF | TPS logo ON | Logo size 15%
 """)
         guide.config(state="disabled")
         ttk.Button(frame, text="Close instructions", command=win.destroy).pack(pady=(10, 0))
@@ -351,12 +368,18 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Warm
         self.refresh_tree()
 
     def neutral(self):
-        for var, value in [(self.exposure, 0), (self.contrast, 1), (self.warmth, 0), (self.red_balance, 1), (self.blue_balance, 1), (self.volume, 1)]:
+        for var, value in [(self.exposure, 0), (self.contrast, 1), (self.shadows, 0), (self.whites, 0), (self.highlights, 0), (self.warmth, 0), (self.red_balance, 1), (self.blue_balance, 1), (self.volume, 1)]:
             var.set(value)
+
+    def set_exposure_preset(self, value: float):
+        self.exposure.set(value)
 
     def dolphin_preset(self):
         self.exposure.set(0.08)
         self.contrast.set(1.05)
+        self.shadows.set(0.0)
+        self.whites.set(0.0)
+        self.highlights.set(0.0)
         self.warmth.set(0.06)
         self.red_balance.set(1.03)
         self.blue_balance.set(0.97)
@@ -507,20 +530,32 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Warm
             return messagebox.showerror(APP_NAME, problem)
         if self.processing:
             return
-        output = Path(self.destination.get()) / clean_code(self.folder_name.get(), "TPS-Edited-Videos")
-        if output.exists() and any(output.iterdir()):
-            output = output.with_name(f"{output.name} {datetime.now():%Y-%m-%d %H%M%S}")
-        output.mkdir(parents=True, exist_ok=False)
-        low_output = None
-        if self.low_res_enabled.get():
-            low_parent = Path(self.low_destination.get() or self.destination.get())
-            low_output = low_parent / f"{clean_code(self.folder_name.get(), 'TPS-Edited-Videos')}-low res"
-            if low_output.exists() and any(low_output.iterdir()):
-                low_output = low_output.with_name(f"{low_output.name} {datetime.now():%Y-%m-%d %H%M%S}")
-            low_output.mkdir(parents=True, exist_ok=False)
+        self.summary.config(text="Preparing output folders…")
+        self.root.update_idletasks()
+        try:
+            output = self.create_unique_folder(Path(self.destination.get()), clean_code(self.folder_name.get(), "TPS-Edited-Videos"))
+            low_output = None
+            if self.low_res_enabled.get():
+                low_parent = Path(self.low_destination.get() or self.destination.get())
+                low_output = self.create_unique_folder(low_parent, f"{clean_code(self.folder_name.get(), 'TPS-Edited-Videos')}-low res")
+        except OSError as exc:
+            self.summary.config(text="Could not create the output folder.")
+            return messagebox.showerror(APP_NAME, f"The output folder could not be created.\n\n{exc}")
         self.processing = True
         self.run_button.state(["disabled"])
+        self.summary.config(text="Starting video processing…")
         threading.Thread(target=self.process_batch, args=(output, low_output), daemon=True).start()
+
+    @staticmethod
+    def create_unique_folder(parent: Path, requested_name: str) -> Path:
+        parent.mkdir(parents=True, exist_ok=True)
+        candidate = parent / requested_name
+        suffix = 2
+        while candidate.exists():
+            candidate = parent / f"{requested_name}-{suffix}"
+            suffix += 1
+        candidate.mkdir(parents=False, exist_ok=False)
+        return candidate
 
     def video_filter(self):
         brightness = max(-1.0, min(1.0, self.exposure.get() / 2.0))
@@ -530,6 +565,15 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Warm
             filters.append("normalize=blackpt=black:whitept=white:smoothing=50")
         if self.auto_white_balance.get():
             filters.append("grayworld")
+        shadow_point = max(0.08, min(0.42, 0.25 + self.shadows.get() * 0.14))
+        highlight_point = max(0.58, min(0.92, 0.75 + self.highlights.get() * 0.14))
+        filters.append(f"curves=all='0/0 0.25/{shadow_point:.4f} 0.75/{highlight_point:.4f} 1/1'")
+        if self.whites.get() >= 0:
+            input_white = max(0.84, 1.0 - self.whites.get() * 0.12)
+            filters.append(f"colorlevels=rimax={input_white:.4f}:gimax={input_white:.4f}:bimax={input_white:.4f}")
+        else:
+            output_white = max(0.84, 1.0 + self.whites.get() * 0.12)
+            filters.append(f"colorlevels=romax={output_white:.4f}:gomax={output_white:.4f}:bomax={output_white:.4f}")
         filters += [
             f"eq=brightness={brightness:.4f}:contrast={self.contrast.get():.4f}:saturation={saturation:.4f}",
             f"colorchannelmixer=rr={self.red_balance.get() + max(0, self.warmth.get()):.4f}:bb={self.blue_balance.get() + max(0, -self.warmth.get()):.4f}",
