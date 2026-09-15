@@ -564,7 +564,9 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         if self.auto_correct.get():
             filters.append("normalize=blackpt=black:whitept=white:smoothing=50")
         if self.auto_white_balance.get():
-            # Grey-edge is much less likely than gray-world to overcorrect night\n            # footage when one colour (for example blue water) dominates a frame.\n            filters.append("greyedge=difford=1:minknorm=5:sigma=2")
+            # Grey-edge is much less likely than gray-world to overcorrect night
+            # footage when one colour (for example blue water) dominates a frame.
+            filters.append("greyedge=difford=1:minknorm=5:sigma=2")
         shadow_point = max(0.08, min(0.42, 0.25 + self.shadows.get() * 0.14))
         highlight_point = max(0.58, min(0.92, 0.75 + self.highlights.get() * 0.14))
         filters.append(f"curves=all='0/0 0.25/{shadow_point:.4f} 0.75/{highlight_point:.4f} 1/1'")
