@@ -1,6 +1,6 @@
 # TPS Bulk Video Editor
 
-Current Windows release: **Version 1.3.8**. The installed version is displayed in the application title bar and main header.
+Current Windows release: **Version 1.3.9**. The installed version is displayed in the application title bar and main header.
 
 Windows desktop software for Tangalooma Photo Shop. It reads tour videos directly from an SD card or local folder, applies bulk video/audio adjustments, overlays the TPS logo, renames clips and writes MP4 files into a newly created output folder. Original source files are never changed.
 
@@ -16,8 +16,9 @@ Enter the first complete output filename once. The app derives the new folder na
 
 - **Auto Correct** normalizes exposure and tonal range through the full video.
 - **Auto White Balance** uses a conservative grey-edge correction that preserves skin tones and avoids strong yellow/green shifts in night footage.
+- **Adjustment presets** provide one-click Neutral, Dolphin night, Low-light lift, Warm sunset and Bright day starting points while keeping every slider available for fine tuning.
 - Both options work with manual sliders and apply to every frame of every selected clip.
-- The built-in before/after preview lets staff choose any selected video and scrub from the beginning to the end before exporting.
+- The built-in before/after preview refreshes automatically as staff move any adjustment slider, choose a preset, toggle automatic correction or change the logo setting.
 - Logo, audio, correction and sequential naming settings apply to the entire selected batch.
 
 ## Low-resolution upload copies
