@@ -7,16 +7,17 @@ import subprocess
 import sys
 import tempfile
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from tkinter import BooleanVar, DoubleVar, IntVar, StringVar, Tk, Toplevel, filedialog, messagebox, ttk
+from tkinter import BooleanVar, DoubleVar, IntVar, StringVar, Text, Tk, Toplevel, filedialog, messagebox, ttk
 
 import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.4"
+APP_VERSION = "1.3.5"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -46,6 +47,7 @@ class TPSVideoEditor:
         self.root.configure(bg="#eef3f4")
         self.clips: list[Clip] = []
         self.preview_image = None
+        self.app_icon_image = None
         self.processing = False
 
         self.source = StringVar()
@@ -90,8 +92,16 @@ class TPSVideoEditor:
     def _build(self):
         header = ttk.Frame(self.root, padding=(20, 14), style="Card.TFrame")
         header.pack(fill="x")
+        app_icon_path = Path(__file__).with_name("assets") / "app-icon.png"
+        if app_icon_path.exists():
+            icon = Image.open(app_icon_path)
+            icon.thumbnail((64, 64), Image.Resampling.LANCZOS)
+            self.app_icon_image = ImageTk.PhotoImage(icon)
+            self.root.iconphoto(True, self.app_icon_image)
+            ttk.Label(header, image=self.app_icon_image, style="Card.TLabel").pack(side="left", padx=(0, 10))
         ttk.Label(header, text=f"TPS BULK VIDEO EDITOR  •  VERSION {APP_VERSION}", style="Title.TLabel", padding=(14, 8)).pack(side="left")
         ttk.Label(header, text="SD card → adjust → rename → new output folder", style="Card.TLabel").pack(side="left", padx=18)
+        ttk.Button(header, text="Staff instructions", command=self.show_instructions).pack(side="right")
 
         body = ttk.Frame(self.root, padding=16)
         body.pack(fill="both", expand=True)
@@ -198,6 +208,75 @@ class TPSVideoEditor:
         scale = ttk.Scale(row, variable=variable, from_=low, to=high, command=lambda x, v=value: v.config(text=f"{float(x):.2f}"))
         scale.pack(side="left", fill="x", expand=True)
         value.config(text=f"{variable.get():.2f}")
+
+    def show_instructions(self):
+        win = Toplevel(self.root)
+        win.title(f"Staff Instructions — {APP_NAME} Version {APP_VERSION}")
+        win.geometry("900x720")
+        frame = ttk.Frame(win, padding=16)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text="TPS BULK VIDEO EDITOR — STAFF INSTRUCTIONS", font=("Segoe UI Semibold", 18)).pack(anchor="w", pady=(0, 10))
+        text_frame = ttk.Frame(frame)
+        text_frame.pack(fill="both", expand=True)
+        scroll = ttk.Scrollbar(text_frame)
+        scroll.pack(side="right", fill="y")
+        guide = Text(text_frame, wrap="word", yscrollcommand=scroll.set, font=("Segoe UI", 11), padx=14, pady=12, background="white", foreground="#17343b")
+        guide.pack(fill="both", expand=True)
+        scroll.config(command=guide.yview)
+        guide.insert("1.0", f"""QUICK WORKFLOW
+
+1. Select Choose SD card / folder and open the folder containing the videos.
+2. Tick the videos required. Select all and Select none change the whole list.
+3. Enter the first complete output filename, for example 14-SEP-2026-DOL-SW-0001.MP4.
+4. Choose the destination where the new output folder will be created.
+5. Select corrections, low-resolution copies and TPS logo settings as required.
+6. Select Preview selected and move through the timeline to compare BEFORE and AFTER.
+7. Select CREATE EDITED VIDEOS and watch the live progress display.
+
+VIDEOS AND NAMING
+
+First output filename — Controls every selected filename and the new folder name. The final number increases automatically: 0001, 0002, 0003 and so on.
+New folder name — Created automatically from the filename prefix and cannot conflict with an existing completed folder.
+Destination — Parent location for the full-resolution output folder.
+
+LOW-RESOLUTION COPIES
+
+Also create low-res watermarked copies — Creates a second upload-ready batch with the same filenames.
+Resolution — 640x480, 854x480 or 1280x720. The image is never stretched; padding is added when required.
+Low-res destination — Optional separate location. Its folder name ends with -low res.
+
+BULK ADJUSTMENTS
+
+Exposure — Brightens or darkens the image. Default: 0.00.
+Contrast — Changes the difference between dark and bright areas. Default: 1.00.
+Warmth — Adds warmer orange tones or cooler blue tones. Default: 0.00.
+Red balance — Adjusts the red channel. Default: 1.00.
+Blue balance — Adjusts the blue channel. Default: 1.00.
+Volume — 0 is silent, 1 is original volume, and 2 doubles the level. Default: 1.00.
+Auto Correct — Automatically normalises exposure and tonal range through the full video. Default: OFF.
+Auto White Balance — Automatically corrects colour balance through the full video. Default: OFF.
+Neutral — Restores all manual sliders to their defaults.
+Dolphin warm — Applies the TPS warm dolphin preset: exposure 0.08, contrast 1.05, warmth 0.06, red 1.03, blue 0.97 and volume 1.00.
+
+TPS LOGO
+
+Add TPS logo — Adds the locked TPS logo at the top left with its original proportions and a drop shadow. Default: ON.
+Logo size — Safe choices are 10%, 15% and 20% of video width. Default on every launch: 15%.
+
+PREVIEW
+
+Preview selected opens a built-in BEFORE/AFTER comparison. Choose any selected clip and move the timeline; it updates automatically after movement. The AFTER frame uses the same correction and logo settings as export.
+
+PROGRESS AND SAFETY
+
+The status column shows the current file, output stage and percentage. The lower progress bar shows the complete batch. Original SD-card files are never modified or deleted.
+
+STARTUP DEFAULTS — VERSION {APP_VERSION}
+
+Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Warmth 0.00 | Red 1.00 | Blue 1.00 | Volume 1.00 | Low-resolution copies OFF | TPS logo ON | Logo size 15%
+""")
+        guide.config(state="disabled")
+        ttk.Button(frame, text="Close instructions", command=win.destroy).pack(pady=(10, 0))
 
     def choose_source(self):
         path = filedialog.askdirectory(title="Choose the SD card or video folder")
@@ -382,6 +461,35 @@ class TPSVideoEditor:
             kwargs["startupinfo"] = startupinfo
         return subprocess.run(command, **kwargs)
 
+    @staticmethod
+    def popen_hidden(command, **kwargs):
+        if os.name == "nt":
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            kwargs["startupinfo"] = startupinfo
+        return subprocess.Popen(command, **kwargs)
+
+    def run_export(self, command, duration: float, clip: Clip, stage: str, task_index: int, task_total: int):
+        progress_command = command[:-1] + ["-progress", "pipe:1", "-nostats", command[-1]]
+        proc = self.popen_hidden(progress_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        recent = deque(maxlen=80)
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            line = line.strip()
+            recent.append(line)
+            if line.startswith("out_time_ms="):
+                try:
+                    seconds = int(line.split("=", 1)[1]) / 1_000_000
+                    current_percent = min(100.0, seconds / max(duration, 0.1) * 100)
+                    overall_percent = ((task_index + current_percent / 100.0) / task_total) * 100
+                    self.root.after(0, lambda p=overall_percent: self.overall.configure(value=p))
+                    self.root.after(0, lambda c=clip, s=stage, p=current_percent: c.status.set(f"{s} {p:.0f}%"))
+                    self.root.after(0, self.refresh_tree)
+                except ValueError:
+                    pass
+        return proc.wait(), "\n".join(recent)
+
     def validate(self):
         if not self.selected_clips():
             return "Select at least one video."
@@ -476,25 +584,34 @@ class TPSVideoEditor:
     def process_batch(self, output: Path, low_output: Path | None = None):
         selected = self.selected_clips()
         results = []
+        task_total = len(selected) * (2 if low_output is not None else 1)
+        task_index = 0
         for index, clip in enumerate(selected):
             target = output / self.output_name(index)
-            self.root.after(0, lambda c=clip: c.status.set("Processing"))
+            duration = self.video_duration(clip.source)
+            self.root.after(0, lambda c=clip: c.status.set("Full resolution 0%"))
             self.root.after(0, self.refresh_tree)
-            proc = self.run_hidden(self.command(clip.source, target), capture_output=True, text=True)
-            ok = proc.returncode == 0 and target.exists()
+            return_code, full_log = self.run_export(self.command(clip.source, target), duration, clip, "Full resolution", task_index, task_total)
+            task_index += 1
+            ok = return_code == 0 and target.exists()
             low_target = None
             low_error = ""
             if ok and low_output is not None:
                 low_target = low_output / self.output_name(index)
-                low_proc = self.run_hidden(self.command(clip.source, low_target, low_res=True), capture_output=True, text=True)
-                low_ok = low_proc.returncode == 0 and low_target.exists()
+                self.root.after(0, lambda c=clip: c.status.set("Low resolution 0%"))
+                low_code, low_log = self.run_export(self.command(clip.source, low_target, low_res=True), duration, clip, "Low resolution", task_index, task_total)
+                task_index += 1
+                low_ok = low_code == 0 and low_target.exists()
                 ok = ok and low_ok
                 if not low_ok:
-                    low_error = low_proc.stderr[-2000:]
+                    low_error = low_log[-2000:]
+            elif low_output is not None:
+                task_index += 1
             status = "Complete" if ok else "Failed"
             clip.status.set(status)
-            results.append({"source": str(clip.source), "output": str(target), "low_res_output": str(low_target) if low_target else None, "status": status, "error": "" if ok else (low_error or proc.stderr[-2000:])})
-            self.root.after(0, lambda p=(index + 1) / len(selected) * 100: self.overall.configure(value=p))
+            results.append({"source": str(clip.source), "output": str(target), "low_res_output": str(low_target) if low_target else None, "status": status, "error": "" if ok else (low_error or full_log[-2000:])})
+            self.root.after(0, lambda p=task_index / task_total * 100: self.overall.configure(value=p))
+            self.root.after(0, lambda done=task_index, total=task_total: self.summary.config(text=f"Creating videos: {done} of {total} outputs completed"))
             self.root.after(0, self.refresh_tree)
         (output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
         if low_output is not None:
