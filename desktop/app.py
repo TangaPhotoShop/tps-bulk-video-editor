@@ -15,7 +15,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.3.1"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -318,20 +318,31 @@ class TPSVideoEditor:
         after = ttk.Label(images, text="AFTER — export settings", anchor="center")
         after.pack(side="left", fill="both", expand=True, padx=(5, 0))
         timeline = DoubleVar(value=15)
-        slider = ttk.Scale(win, variable=timeline, from_=0, to=100)
+        pending = {"job": None, "generation": 0}
+
+        def schedule_render(_value=None, immediate=False):
+            if pending["job"] is not None:
+                win.after_cancel(pending["job"])
+            delay = 0 if immediate else 350
+            pending["job"] = win.after(delay, render)
+
+        slider = ttk.Scale(win, variable=timeline, from_=0, to=100, command=schedule_render)
         slider.pack(fill="x", padx=18)
-        ttk.Label(win, text="Drag through the whole video, then select Update preview. The AFTER image uses the same corrections and logo as export.").pack(pady=5)
+        ttk.Label(win, text="Move through the whole video. The BEFORE and AFTER images update automatically using the same corrections and logo as export.").pack(pady=(5, 12))
 
         def render():
+            if not win.winfo_exists():
+                return
             clip = next(c for c in clips if c.source.name == selected_name.get())
             status.config(text="Creating preview…")
-            threading.Thread(target=self._render_preview_pair, args=(clip.source, timeline.get(), before, after, status), daemon=True).start()
+            pending["generation"] += 1
+            generation = pending["generation"]
+            threading.Thread(target=self._render_preview_pair, args=(clip.source, timeline.get(), before, after, status, generation, pending), daemon=True).start()
 
-        ttk.Button(win, text="Update preview", style="Primary.TButton", command=render).pack(pady=(5, 12))
-        chooser.bind("<<ComboboxSelected>>", lambda _e: render())
-        render()
+        chooser.bind("<<ComboboxSelected>>", lambda _e: schedule_render(immediate=True))
+        schedule_render(immediate=True)
 
-    def _render_preview_pair(self, source: Path, percent: float, before_label, after_label, status_label):
+    def _render_preview_pair(self, source: Path, percent: float, before_label, after_label, status_label, generation: int, pending):
         duration = self.video_duration(source)
         timestamp = max(0, duration * percent / 100.0)
         token = re.sub(r"\W+", "-", source.stem)[:35]
@@ -339,12 +350,14 @@ class TPSVideoEditor:
         before_path = temp / f"tps-before-{token}.jpg"
         after_path = temp / f"tps-after-{token}.jpg"
         common = [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source)]
-        subprocess.run(common + ["-frames:v", "1", "-vf", "scale=520:-2", str(before_path)], capture_output=True)
-        subprocess.run(self.preview_frame_command(source, timestamp, after_path), capture_output=True)
+        self.run_hidden(common + ["-frames:v", "1", "-vf", "scale=520:-2", str(before_path)], capture_output=True)
+        self.run_hidden(self.preview_frame_command(source, timestamp, after_path), capture_output=True)
         if not before_path.exists() or not after_path.exists():
             self.root.after(0, lambda: status_label.config(text="Preview could not be created"))
             return
         def show():
+            if generation != pending["generation"] or not before_label.winfo_exists():
+                return
             before_image = Image.open(before_path); before_image.thumbnail((520, 580))
             after_image = Image.open(after_path); after_image.thumbnail((520, 580))
             before_photo = ImageTk.PhotoImage(before_image)
@@ -357,12 +370,22 @@ class TPSVideoEditor:
         self.root.after(0, show)
 
     def video_duration(self, source: Path) -> float:
-        proc = subprocess.run([ffmpeg_path(), "-i", str(source)], capture_output=True, text=True)
+        proc = self.run_hidden([ffmpeg_path(), "-i", str(source)], capture_output=True, text=True)
         match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr)
         if not match:
             return 1.0
         hours, minutes, seconds = match.groups()
         return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+
+    @staticmethod
+    def run_hidden(command, **kwargs):
+        # Prevent FFmpeg from opening a black console window in the Windows GUI app.
+        if os.name == "nt":
+            kwargs["creationflags"] = kwargs.get("creationflags", 0) | subprocess.CREATE_NO_WINDOW
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            kwargs["startupinfo"] = startupinfo
+        return subprocess.run(command, **kwargs)
 
     def validate(self):
         if not self.selected_clips():
@@ -460,13 +483,13 @@ class TPSVideoEditor:
             target = output / self.output_name(index)
             self.root.after(0, lambda c=clip: c.status.set("Processing"))
             self.root.after(0, self.refresh_tree)
-            proc = subprocess.run(self.command(clip.source, target), capture_output=True, text=True)
+            proc = self.run_hidden(self.command(clip.source, target), capture_output=True, text=True)
             ok = proc.returncode == 0 and target.exists()
             low_target = None
             low_error = ""
             if ok and low_output is not None:
                 low_target = low_output / self.output_name(index)
-                low_proc = subprocess.run(self.command(clip.source, low_target, low_res=True), capture_output=True, text=True)
+                low_proc = self.run_hidden(self.command(clip.source, low_target, low_res=True), capture_output=True, text=True)
                 low_ok = low_proc.returncode == 0 and low_target.exists()
                 ok = ok and low_ok
                 if not low_ok:
