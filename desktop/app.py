@@ -17,7 +17,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.6"
+APP_VERSION = "1.3.7"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -270,7 +270,7 @@ Red balance — Adjusts the red channel. Default: 1.00.
 Blue balance — Adjusts the blue channel. Default: 1.00.
 Volume — 0 is silent, 1 is original volume, and 2 doubles the level. Default: 1.00.
 Auto Correct — Automatically normalises exposure and tonal range through the full video. Default: OFF.
-Auto White Balance — Automatically corrects colour balance through the full video. Default: OFF.
+Auto White Balance — Applies a conservative colour correction through the full video. It is designed to preserve skin tones and resist sudden yellow/green shifts in night footage. Default: OFF.
 Exposure presets — Dark + strongly lifts a dark video; Lift makes a smaller increase; Normal returns exposure to 0; Bright - reduces an overly bright video.
 Neutral — Restores all manual sliders to their defaults.
 Dolphin warm — Applies the TPS warm dolphin preset: exposure 0.08, contrast 1.05, warmth 0.06, red 1.03, blue 0.97 and volume 1.00.
@@ -564,7 +564,7 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         if self.auto_correct.get():
             filters.append("normalize=blackpt=black:whitept=white:smoothing=50")
         if self.auto_white_balance.get():
-            filters.append("grayworld")
+            # Grey-edge is much less likely than gray-world to overcorrect night\n            # footage when one colour (for example blue water) dominates a frame.\n            filters.append("greyedge=difford=1:minknorm=5:sigma=2")
         shadow_point = max(0.08, min(0.42, 0.25 + self.shadows.get() * 0.14))
         highlight_point = max(0.58, min(0.92, 0.75 + self.highlights.get() * 0.14))
         filters.append(f"curves=all='0/0 0.25/{shadow_point:.4f} 0.75/{highlight_point:.4f} 1/1'")
