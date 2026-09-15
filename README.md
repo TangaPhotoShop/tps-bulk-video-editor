@@ -10,7 +10,7 @@ Windows desktop software for Tangalooma Photo Shop. It reads tour videos directl
 
 Example: `13-SEP-2026-DOL-DM-0001.MP4`
 
-Enter the date, photographer initials and starting number. The activity is locked to DOL, and the app generates the filename and matching folder name automatically. Every selected video receives the next four-digit number.
+Enter the date and photographer initials; the starting number defaults to `0001`. The activity is locked to DOL, and the app generates filenames such as `15-SEP-2026-DOL-SW-0001.MP4` plus the folder name `15-SEP-2026-DOL_SW`. Every selected video receives the next four-digit number.
 
 ## Batch correction and preview
 
@@ -31,11 +31,11 @@ Version 1.3.14 displays the original, full-resolution and low-resolution file si
 
 Version 1.3.15 keeps batch cancellation permanently visible: the main Create Edited Videos button becomes a red Cancel Batch Export button while processing. Cancellation requires confirmation, preserves completed outputs, removes the incomplete current file and then restores the editor for adjustment and restart.
 
-Version 1.3.16 adds a low-resolution watermarked-only export mode that skips the full-resolution batch. It also replaces free-form filenames with validated Date, fixed DOL activity, Photographer Initials and Starting Number controls, generating locked sequential names such as `15-SEP-2026-DOL-SW-0001.MP4`.
+Version 1.3.16 adds a low-resolution watermarked-only export mode that skips the full-resolution batch. It replaces free-form filenames with validated Date, fixed DOL activity, Photographer Initials and Starting Number controls, generating locked sequential names such as `15-SEP-2026-DOL-SW-0001.MP4`. The high- and low-resolution destination controls are editable drop-downs that suggest the standard TPS Z: drive folders while retaining Browse and manual overrides. The file list numbers every source clip and shows its detected current resolution, expected full-resolution output and selected low-resolution output. During export, the BUSY notice reports the current video count, whole-batch percentage and estimated time remaining.
 
 ## Low-resolution upload copies
 
-Optionally create a second watermarked batch for uploading, or choose low-resolution only to skip the full-resolution batch. Choose 640x480, 854x480 or 1280x720 and an optional separate destination. The app preserves aspect ratio with padding (no stretching), keeps the same sequential filenames, and writes the copies to a folder named `<filename-prefix>-low res`.
+Optionally create a second watermarked batch for uploading, or choose low-resolution only to skip the full-resolution batch. Choose 640x480, 854x480 or 1280x720 and an optional separate destination. The app preserves aspect ratio with padding (no stretching), keeps the same sequential filenames, and writes the copies to a folder such as `15-SEP-2026-DOL_SW-LOW-RES`.
 
 ## Windows build
 
