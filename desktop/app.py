@@ -17,7 +17,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.10"
+APP_VERSION = "1.3.11"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -49,8 +49,9 @@ class TPSVideoEditor:
         self.preview_image = None
         self.app_icon_image = None
         self.processing = False
-        self.preview_window = None
-        self.preview_refresh = None
+        self.preview_job = None
+        self.preview_generation = 0
+        self.preview_duration_cache = {}
 
         self.source = StringVar()
         self.destination = StringVar()
@@ -65,19 +66,22 @@ class TPSVideoEditor:
         self.low_resolution = StringVar(value="640x480")
         self.auto_correct = BooleanVar(value=False)
         self.auto_white_balance = BooleanVar(value=False)
-        self.adjustment_preset = StringVar(value="Neutral")
         self.exposure = DoubleVar(value=0.0)
         self.contrast = DoubleVar(value=1.0)
         self.shadows = DoubleVar(value=0.0)
         self.whites = DoubleVar(value=0.0)
         self.highlights = DoubleVar(value=0.0)
+        self.blacks = DoubleVar(value=0.0)
+        self.white_balance = DoubleVar(value=0.0)
         self.warmth = DoubleVar(value=0.0)
-        self.red_balance = DoubleVar(value=1.0)
-        self.blue_balance = DoubleVar(value=1.0)
+        self.saturation = DoubleVar(value=1.0)
         self.volume = DoubleVar(value=1.0)
         self.logo_enabled = BooleanVar(value=True)
         self.logo_path = StringVar(value=str(Path(__file__).with_name("assets") / "tps-logo.png"))
         self.logo_size = StringVar(value="15%")
+        self.preview_selected_name = StringVar()
+        self.preview_timeline = DoubleVar(value=15)
+        self.preview_status = StringVar(value="Choose a video folder to begin previewing.")
 
         self._style()
         self._build()
@@ -117,7 +121,7 @@ class TPSVideoEditor:
         right.pack(side="right", fill="y", padx=(8, 0))
 
         files = ttk.LabelFrame(left, text="1. Videos from SD card")
-        files.pack(fill="both", expand=True)
+        files.pack(fill="x")
         source_row = ttk.Frame(files, style="Card.TFrame")
         source_row.pack(fill="x", pady=(0, 8))
         ttk.Entry(source_row, textvariable=self.source).pack(side="left", fill="x", expand=True)
@@ -131,7 +135,7 @@ class TPSVideoEditor:
         self.count_label.pack(side="right")
 
         columns = ("use", "source", "output", "status")
-        self.tree = ttk.Treeview(files, columns=columns, show="headings", selectmode="browse")
+        self.tree = ttk.Treeview(files, columns=columns, show="headings", selectmode="browse", height=7)
         self.tree.heading("use", text="Use")
         self.tree.heading("source", text="Source file")
         self.tree.heading("output", text="New filename")
@@ -142,8 +146,27 @@ class TPSVideoEditor:
         self.tree.column("status", width=120)
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<Button-1>", self.toggle_row)
+        self.tree.bind("<<TreeviewSelect>>", self.preview_tree_selected)
 
-        naming = ttk.LabelFrame(right, text="2. Rename and output")
+        preview = ttk.LabelFrame(left, text="2. Live before and after preview")
+        preview.pack(fill="both", expand=True, pady=(10, 0))
+        preview_top = ttk.Frame(preview, style="Card.TFrame")
+        preview_top.pack(fill="x", pady=(0, 6))
+        ttk.Label(preview_top, text="Video", style="Card.TLabel").pack(side="left")
+        self.preview_chooser = ttk.Combobox(preview_top, textvariable=self.preview_selected_name, state="readonly", width=52)
+        self.preview_chooser.pack(side="left", fill="x", expand=True, padx=8)
+        self.preview_chooser.bind("<<ComboboxSelected>>", lambda _e: self._schedule_preview(immediate=True))
+        ttk.Label(preview_top, textvariable=self.preview_status, style="Card.TLabel").pack(side="right")
+        preview_images = ttk.Frame(preview, style="Card.TFrame")
+        preview_images.pack(fill="both", expand=True)
+        self.preview_before = ttk.Label(preview_images, text="BEFORE", anchor="center", style="Card.TLabel")
+        self.preview_before.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        self.preview_after = ttk.Label(preview_images, text="AFTER — current export settings", anchor="center", style="Card.TLabel")
+        self.preview_after.pack(side="left", fill="both", expand=True, padx=(5, 0))
+        ttk.Scale(preview, variable=self.preview_timeline, from_=0, to=100, command=lambda _v: self._schedule_preview()).pack(fill="x", pady=(7, 0))
+        ttk.Label(preview, text="Move through the video or adjust any control—the preview refreshes automatically.", style="Card.TLabel").pack(pady=(4, 0))
+
+        naming = ttk.LabelFrame(right, text="3. Rename and output")
         naming.pack(fill="x")
         self._field(naming, "First output filename", self.first_filename)
         ttk.Label(naming, text="Example: 14-SEP-2026-DOL-SW-001.MP4", style="Card.TLabel").pack(anchor="w", pady=(0, 4))
@@ -165,45 +188,27 @@ class TPSVideoEditor:
         ttk.Button(low_row, text="Low-res destination", command=self.choose_low_destination).pack(side="left", padx=(6, 0))
         ttk.Label(naming, text="Folder: filename prefix + -low res", style="Card.TLabel").pack(anchor="w")
 
-        edits = ttk.LabelFrame(right, text="3. Bulk adjustments")
+        edits = ttk.LabelFrame(right, text="4. Bulk adjustments")
         edits.pack(fill="x", pady=10)
         self._slider(edits, "Exposure", self.exposure, -1.5, 1.5)
         self._slider(edits, "Contrast", self.contrast, 0.7, 1.4)
         self._slider(edits, "Shadows", self.shadows, -1.0, 1.0)
-        self._slider(edits, "Whites", self.whites, -1.0, 1.0)
         self._slider(edits, "Highlights", self.highlights, -1.0, 1.0)
+        self._slider(edits, "Blacks", self.blacks, -1.0, 1.0)
+        self._slider(edits, "Whites", self.whites, -1.0, 1.0)
+        self._slider(edits, "White balance", self.white_balance, -1.0, 1.0)
         self._slider(edits, "Warmth", self.warmth, -0.3, 0.3)
-        self._slider(edits, "Red balance", self.red_balance, 0.8, 1.2)
-        self._slider(edits, "Blue balance", self.blue_balance, 0.8, 1.2)
+        self._slider(edits, "Saturation", self.saturation, 0.0, 2.0)
         self._slider(edits, "Volume", self.volume, 0.0, 2.0)
         auto_row = ttk.Frame(edits, style="Card.TFrame")
         auto_row.pack(fill="x", pady=(7, 0))
         ttk.Checkbutton(auto_row, text="Auto Correct", variable=self.auto_correct, command=self._adjustment_changed).pack(side="left")
         ttk.Checkbutton(auto_row, text="Auto White Balance", variable=self.auto_white_balance, command=self._adjustment_changed).pack(side="left", padx=8)
-        full_presets = ttk.Frame(edits, style="Card.TFrame")
-        full_presets.pack(fill="x", pady=(7, 0))
-        ttk.Label(full_presets, text="Adjustment preset", style="Card.TLabel").pack(side="left")
-        preset_picker = ttk.Combobox(
-            full_presets,
-            textvariable=self.adjustment_preset,
-            values=("Neutral", "Dolphin night", "Low-light lift", "Warm sunset", "Bright day"),
-            state="readonly",
-            width=18,
-        )
-        preset_picker.pack(side="right", fill="x", expand=True, padx=(8, 0))
-        preset_picker.bind("<<ComboboxSelected>>", lambda _e: self.apply_adjustment_preset())
-        exposure_presets = ttk.Frame(edits, style="Card.TFrame")
-        exposure_presets.pack(fill="x", pady=(7, 0))
-        ttk.Label(exposure_presets, text="Exposure presets", style="Card.TLabel").pack(side="left")
-        ttk.Button(exposure_presets, text="Dark +", command=lambda: self.set_exposure_preset(0.35)).pack(side="left", padx=(6, 2))
-        ttk.Button(exposure_presets, text="Lift", command=lambda: self.set_exposure_preset(0.15)).pack(side="left", padx=2)
-        ttk.Button(exposure_presets, text="Normal", command=lambda: self.set_exposure_preset(0.0)).pack(side="left", padx=2)
-        ttk.Button(exposure_presets, text="Bright -", command=lambda: self.set_exposure_preset(-0.20)).pack(side="left", padx=2)
         preset_row = ttk.Frame(edits, style="Card.TFrame")
         preset_row.pack(fill="x", pady=(7, 0))
-        ttk.Button(preset_row, text="Reset all", command=lambda: self.apply_adjustment_preset("Neutral")).pack(side="left")
+        ttk.Button(preset_row, text="Reset adjustments", command=self.neutral).pack(side="left")
 
-        logo = ttk.LabelFrame(right, text="4. TPS logo")
+        logo = ttk.LabelFrame(right, text="5. TPS logo")
         logo.pack(fill="x")
         logo_controls = ttk.Frame(logo, style="Card.TFrame")
         logo_controls.pack(fill="x")
@@ -244,8 +249,7 @@ class TPSVideoEditor:
         self._adjustment_changed()
 
     def _adjustment_changed(self):
-        if self.preview_refresh is not None:
-            self.preview_refresh()
+        self._schedule_preview()
 
     def show_instructions(self):
         win = Toplevel(self.root)
@@ -288,17 +292,16 @@ BULK ADJUSTMENTS
 Exposure — Brightens or darkens the image. Default: 0.00.
 Contrast — Changes the difference between dark and bright areas. Default: 1.00.
 Shadows — Fine-tunes detail in darker areas without moving the main exposure. Default: 0.00.
-Whites — Fine-tunes the brightest white point. Default: 0.00.
 Highlights — Fine-tunes detail in bright areas. Default: 0.00.
+Blacks — Lifts or deepens the darkest point. Default: 0.00.
+Whites — Fine-tunes the brightest white point. Default: 0.00.
+White balance — Corrects an overall blue or amber colour cast. Default: 0.00.
 Warmth — Adds warmer orange tones or cooler blue tones. Default: 0.00.
-Red balance — Adjusts the red channel. Default: 1.00.
-Blue balance — Adjusts the blue channel. Default: 1.00.
+Saturation — Controls colour intensity. Default: 1.00.
 Volume — 0 is silent, 1 is original volume, and 2 doubles the level. Default: 1.00.
 Auto Correct — Automatically normalises exposure and tonal range through the full video. Default: OFF.
 Auto White Balance — Applies a conservative colour correction through the full video. It is designed to preserve skin tones and resist sudden yellow/green shifts in night footage. Default: OFF.
-Adjustment preset — Sets all visible correction sliders together. Neutral restores the original look; Dolphin night is the recommended safe starting point for dolphin-feed footage; Low-light lift opens dark scenes; Warm sunset enriches portraits; Bright day protects highlights.
-Exposure presets — Dark + strongly lifts a dark video; Lift makes a smaller increase; Normal returns exposure to 0; Bright - reduces an overly bright video. The other sliders remain available for fine tuning.
-Reset all — Restores all correction sliders and automatic options to Neutral.
+Reset adjustments — Restores every correction slider and automatic option to its startup default.
 
 TPS LOGO
 
@@ -307,7 +310,7 @@ Logo size — Safe choices are 10%, 15% and 20% of video width. Default on every
 
 PREVIEW
 
-Preview selected opens a built-in BEFORE/AFTER comparison. Keep this viewer open while choosing presets or moving sliders—the AFTER image refreshes automatically after each change and uses the same correction and logo settings as export.
+The permanent BEFORE/AFTER viewer is part of the main window. Select a video, move its timeline, or change any adjustment and the AFTER image refreshes automatically using the same settings as export.
 
 PROGRESS AND SAFETY
 
@@ -315,7 +318,7 @@ The status column shows the current file, output stage and percentage. The lower
 
 STARTUP DEFAULTS — VERSION {APP_VERSION}
 
-Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Whites 0.00 | Highlights 0.00 | Warmth 0.00 | Red 1.00 | Blue 1.00 | Volume 1.00 | Low-resolution copies OFF | TPS logo ON | Logo size 15%
+Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Low-resolution copies OFF | TPS logo ON | Logo size 15%
 """)
         guide.config(state="disabled")
         ttk.Button(frame, text="Close instructions", command=win.destroy).pack(pady=(10, 0))
@@ -345,7 +348,12 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
     def load_clips(self, folder: Path):
         paths = sorted(p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS)
         self.clips = [Clip(p, BooleanVar(value=True), StringVar(value="Ready"), DoubleVar(value=0)) for p in paths]
+        names = [p.name for p in paths]
+        self.preview_chooser["values"] = names
+        self.preview_selected_name.set(names[0] if names else "")
         self.refresh_tree()
+        if names:
+            self._schedule_preview(immediate=True)
 
     def filename_parts(self):
         value = Path(self.first_filename.get().strip()).name
@@ -393,43 +401,11 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         self.refresh_tree()
 
     def neutral(self):
-        for var, value in [(self.exposure, 0), (self.contrast, 1), (self.shadows, 0), (self.whites, 0), (self.highlights, 0), (self.warmth, 0), (self.red_balance, 1), (self.blue_balance, 1), (self.volume, 1)]:
-            var.set(value)
-
-    def apply_adjustment_preset(self, name=None):
-        name = name or self.adjustment_preset.get()
-        presets = {
-            "Neutral": (False, False, 0.00, 1.00, 0.00, 0.00, 0.00, 0.00, 1.00, 1.00),
-            "Dolphin night": (False, True, 0.08, 1.03, 0.12, -0.05, -0.12, 0.00, 1.00, 1.00),
-            "Low-light lift": (False, True, 0.25, 1.04, 0.22, -0.05, -0.14, 0.00, 1.00, 1.00),
-            "Warm sunset": (False, False, 0.05, 1.06, 0.08, 0.00, -0.10, 0.08, 1.02, 0.98),
-            "Bright day": (False, True, -0.08, 1.04, 0.05, -0.08, -0.22, 0.00, 1.00, 1.00),
-        }
-        auto, white_balance, exposure, contrast, shadows, whites, highlights, warmth, red, blue = presets.get(name, presets["Neutral"])
-        self.adjustment_preset.set(name)
-        self.auto_correct.set(auto)
-        self.auto_white_balance.set(white_balance)
-        for var, value in (
-            (self.exposure, exposure), (self.contrast, contrast), (self.shadows, shadows),
-            (self.whites, whites), (self.highlights, highlights), (self.warmth, warmth),
-            (self.red_balance, red), (self.blue_balance, blue),
-        ):
+        self.auto_correct.set(False)
+        self.auto_white_balance.set(False)
+        for var, value in [(self.exposure, 0), (self.contrast, 1), (self.shadows, 0), (self.highlights, 0), (self.blacks, 0), (self.whites, 0), (self.white_balance, 0), (self.warmth, 0), (self.saturation, 1), (self.volume, 1)]:
             var.set(value)
         self._adjustment_changed()
-
-    def set_exposure_preset(self, value: float):
-        self.exposure.set(value)
-
-    def dolphin_preset(self):
-        self.exposure.set(0.08)
-        self.contrast.set(1.05)
-        self.shadows.set(0.0)
-        self.whites.set(0.0)
-        self.highlights.set(0.0)
-        self.warmth.set(0.06)
-        self.red_balance.set(1.03)
-        self.blue_balance.set(0.97)
-        self.volume.set(1.0)
 
     def selected_clips(self):
         return [c for c in self.clips if c.selected.get()]
@@ -438,99 +414,71 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         clips = self.selected_clips()
         if not clips:
             return messagebox.showinfo(APP_NAME, "Select a video first.")
-        if self.preview_window is not None and self.preview_window.winfo_exists():
-            self.preview_window.lift()
-            self.preview_window.focus_force()
-            self._adjustment_changed()
+        self.preview_selected_name.set(clips[0].source.name)
+        self._schedule_preview(immediate=True)
+
+    def preview_tree_selected(self, _event=None):
+        selection = self.tree.selection()
+        if selection:
+            self.preview_selected_name.set(self.clips[int(selection[0])].source.name)
+            self._schedule_preview(immediate=True)
+
+    def _schedule_preview(self, _value=None, immediate=False):
+        if not self.preview_selected_name.get() or not self.clips:
             return
-        win = Toplevel(self.root)
-        self.preview_window = win
-        win.title("Batch preview — before and after")
-        win.geometry("1120x760")
-        selected_name = StringVar(value=clips[0].source.name)
-        top = ttk.Frame(win, padding=10)
-        top.pack(fill="x")
-        ttk.Label(top, text="Video").pack(side="left")
-        chooser = ttk.Combobox(top, textvariable=selected_name, values=[c.source.name for c in clips], state="readonly", width=55)
-        chooser.pack(side="left", padx=8)
-        status = ttk.Label(top, text="Loading preview…")
-        status.pack(side="right")
-        images = ttk.Frame(win, padding=10)
-        images.pack(fill="both", expand=True)
-        before = ttk.Label(images, text="BEFORE", anchor="center")
-        before.pack(side="left", fill="both", expand=True, padx=(0, 5))
-        after = ttk.Label(images, text="AFTER — export settings", anchor="center")
-        after.pack(side="left", fill="both", expand=True, padx=(5, 0))
-        timeline = DoubleVar(value=15)
-        pending = {"job": None, "generation": 0}
+        if self.preview_job is not None:
+            self.root.after_cancel(self.preview_job)
+        self.preview_job = self.root.after(0 if immediate else 250, self._start_preview_render)
 
-        def schedule_render(_value=None, immediate=False):
-            if not win.winfo_exists():
-                return
-            if pending["job"] is not None:
-                win.after_cancel(pending["job"])
-            delay = 0 if immediate else 250
-            pending["job"] = win.after(delay, render)
+    def _start_preview_render(self):
+        source = next((c.source for c in self.clips if c.source.name == self.preview_selected_name.get()), None)
+        if source is None:
+            return
+        self.preview_status.set("Updating preview…")
+        self.preview_generation += 1
+        generation = self.preview_generation
+        settings = self.settings_snapshot()
+        threading.Thread(target=self._render_preview_pair, args=(source, self.preview_timeline.get(), generation, settings), daemon=True).start()
 
-        self.preview_refresh = schedule_render
-
-        def close_preview():
-            self.preview_refresh = None
-            self.preview_window = None
-            win.destroy()
-
-        win.protocol("WM_DELETE_WINDOW", close_preview)
-
-        slider = ttk.Scale(win, variable=timeline, from_=0, to=100, command=schedule_render)
-        slider.pack(fill="x", padx=18)
-        ttk.Label(win, text="Move through the video or adjust any preset, slider, automatic correction or logo control. The AFTER image refreshes live using the export settings.").pack(pady=(5, 12))
-
-        def render():
-            if not win.winfo_exists():
-                return
-            clip = next(c for c in clips if c.source.name == selected_name.get())
-            status.config(text="Creating preview…")
-            pending["generation"] += 1
-            generation = pending["generation"]
-            threading.Thread(target=self._render_preview_pair, args=(clip.source, timeline.get(), before, after, status, generation, pending), daemon=True).start()
-
-        chooser.bind("<<ComboboxSelected>>", lambda _e: schedule_render(immediate=True))
-        schedule_render(immediate=True)
-
-    def _render_preview_pair(self, source: Path, percent: float, before_label, after_label, status_label, generation: int, pending):
+    def _render_preview_pair(self, source: Path, percent: float, generation: int, settings):
         duration = self.video_duration(source)
         timestamp = max(0, duration * percent / 100.0)
         token = re.sub(r"\W+", "-", source.stem)[:35]
         temp = Path(tempfile.gettempdir())
-        before_path = temp / f"tps-before-{token}.jpg"
-        after_path = temp / f"tps-after-{token}.jpg"
+        before_path = temp / f"tps-before-{token}-{generation}.jpg"
+        after_path = temp / f"tps-after-{token}-{generation}.jpg"
         common = [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source)]
         self.run_hidden(common + ["-frames:v", "1", "-vf", "scale=520:-2", str(before_path)], capture_output=True)
-        self.run_hidden(self.preview_frame_command(source, timestamp, after_path), capture_output=True)
+        self.run_hidden(self.preview_frame_command(source, timestamp, after_path, settings), capture_output=True)
         if not before_path.exists() or not after_path.exists():
-            self.root.after(0, lambda: status_label.config(text="Preview could not be created"))
+            self.root.after(0, lambda: self.preview_status.set("Preview could not be created"))
             return
         def show():
-            if generation != pending["generation"] or not before_label.winfo_exists():
+            if generation != self.preview_generation:
                 return
             before_image = Image.open(before_path); before_image.thumbnail((520, 580))
             after_image = Image.open(after_path); after_image.thumbnail((520, 580))
             before_photo = ImageTk.PhotoImage(before_image)
             after_photo = ImageTk.PhotoImage(after_image)
-            before_label.config(image=before_photo, text="")
-            after_label.config(image=after_photo, text="")
-            before_label.image = before_photo
-            after_label.image = after_photo
-            status_label.config(text=f"{timestamp:.1f}s of {duration:.1f}s")
+            self.preview_before.config(image=before_photo, text="")
+            self.preview_after.config(image=after_photo, text="")
+            self.preview_before.image = before_photo
+            self.preview_after.image = after_photo
+            self.preview_status.set(f"{timestamp:.1f}s of {duration:.1f}s")
         self.root.after(0, show)
 
     def video_duration(self, source: Path) -> float:
+        cached = self.preview_duration_cache.get(source)
+        if cached is not None:
+            return cached
         proc = self.run_hidden([ffmpeg_path(), "-i", str(source)], capture_output=True, text=True)
         match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr)
         if not match:
             return 1.0
         hours, minutes, seconds = match.groups()
-        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        duration = int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+        self.preview_duration_cache[source] = duration
+        return duration
 
     def video_dimensions(self, source: Path) -> tuple[int, int]:
         proc = self.run_hidden([ffmpeg_path(), "-i", str(source)], capture_output=True, text=True)
@@ -564,7 +512,7 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         for line in proc.stdout:
             line = line.strip()
             recent.append(line)
-            if line.startswith("out_time_ms="):
+            if line.startswith(("out_time_ms=", "out_time_us=")):
                 try:
                     seconds = int(line.split("=", 1)[1]) / 1_000_000
                     current_percent = min(100.0, seconds / max(duration, 0.1) * 100)
@@ -607,7 +555,11 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         self.processing = True
         self.run_button.state(["disabled"])
         self.summary.config(text="Starting video processing…")
-        threading.Thread(target=self.process_batch, args=(output, low_output), daemon=True).start()
+        self.overall.configure(value=0)
+        settings = self.settings_snapshot()
+        selected = self.selected_clips()
+        output_names = [self.output_name(index) for index in range(len(selected))]
+        threading.Thread(target=self.process_batch, args=(output, low_output, settings, selected, output_names), daemon=True).start()
 
     @staticmethod
     def create_unique_folder(parent: Path, requested_name: str) -> Path:
@@ -620,36 +572,62 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         candidate.mkdir(parents=False, exist_ok=False)
         return candidate
 
-    def video_filter(self):
-        brightness = max(-1.0, min(1.0, self.exposure.get() / 2.0))
-        saturation = 1.0 + self.warmth.get() * 0.35
+    def settings_snapshot(self):
+        """Copy every Tk value on the UI thread before background work starts."""
+        return {
+            "auto_correct": self.auto_correct.get(),
+            "auto_white_balance": self.auto_white_balance.get(),
+            "exposure": self.exposure.get(),
+            "contrast": self.contrast.get(),
+            "shadows": self.shadows.get(),
+            "highlights": self.highlights.get(),
+            "blacks": self.blacks.get(),
+            "whites": self.whites.get(),
+            "white_balance": self.white_balance.get(),
+            "warmth": self.warmth.get(),
+            "saturation": self.saturation.get(),
+            "volume": self.volume.get(),
+            "logo_enabled": self.logo_enabled.get(),
+            "logo_path": self.logo_path.get(),
+            "logo_size": self.logo_size.get(),
+            "low_resolution": self.low_resolution.get(),
+        }
+
+    def video_filter(self, settings):
+        brightness = max(-1.0, min(1.0, settings["exposure"] / 2.0))
         filters = []
-        if self.auto_correct.get():
+        if settings["auto_correct"]:
             filters.append("normalize=blackpt=black:whitept=white:smoothing=50")
-        if self.auto_white_balance.get():
+        if settings["auto_white_balance"]:
             # Grey-edge is much less likely than gray-world to overcorrect night
             # footage when one colour (for example blue water) dominates a frame.
             filters.append("greyedge=difford=1:minknorm=5:sigma=2")
-        shadow_point = max(0.08, min(0.42, 0.25 + self.shadows.get() * 0.14))
-        highlight_point = max(0.58, min(0.92, 0.75 + self.highlights.get() * 0.14))
-        filters.append(f"curves=all='0/0 0.25/{shadow_point:.4f} 0.75/{highlight_point:.4f} 1/1'")
-        if self.whites.get() >= 0:
-            input_white = max(0.84, 1.0 - self.whites.get() * 0.12)
+        black_out = max(0.0, settings["blacks"] * 0.08)
+        black_in = max(0.0, -settings["blacks"] * 0.08)
+        shadow_point = max(0.08, min(0.42, 0.25 + settings["shadows"] * 0.14))
+        highlight_point = max(0.58, min(0.92, 0.75 + settings["highlights"] * 0.14))
+        filters.append(f"curves=all='{black_in:.4f}/{black_out:.4f} 0.25/{shadow_point:.4f} 0.75/{highlight_point:.4f} 1/1'")
+        if settings["whites"] >= 0:
+            input_white = max(0.84, 1.0 - settings["whites"] * 0.12)
             filters.append(f"colorlevels=rimax={input_white:.4f}:gimax={input_white:.4f}:bimax={input_white:.4f}")
         else:
-            output_white = max(0.84, 1.0 + self.whites.get() * 0.12)
+            output_white = max(0.84, 1.0 + settings["whites"] * 0.12)
             filters.append(f"colorlevels=romax={output_white:.4f}:gomax={output_white:.4f}:bomax={output_white:.4f}")
+        colour_shift = settings["white_balance"] * 0.12 + settings["warmth"]
+        red_gain = max(0.75, min(1.30, 1.0 + colour_shift))
+        blue_gain = max(0.75, min(1.30, 1.0 - colour_shift))
+        green_gain = max(0.94, 1.0 - abs(settings["white_balance"]) * 0.04)
         filters += [
-            f"eq=brightness={brightness:.4f}:contrast={self.contrast.get():.4f}:saturation={saturation:.4f}",
-            f"colorchannelmixer=rr={self.red_balance.get() + max(0, self.warmth.get()):.4f}:bb={self.blue_balance.get() + max(0, -self.warmth.get()):.4f}",
+            f"eq=brightness={brightness:.4f}:contrast={settings['contrast']:.4f}:saturation={settings['saturation']:.4f}",
+            f"colorchannelmixer=rr={red_gain:.4f}:gg={green_gain:.4f}:bb={blue_gain:.4f}",
         ]
         return ",".join(filters)
 
-    def preview_frame_command(self, source: Path, timestamp: float, target: Path):
-        base_filter = self.video_filter() + ",scale=520:-2"
-        if not self.logo_enabled.get():
+    def preview_frame_command(self, source: Path, timestamp: float, target: Path, settings):
+        base_filter = self.video_filter(settings) + ",scale=520:-2"
+        if not settings["logo_enabled"]:
             return [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source), "-frames:v", "1", "-vf", base_filter, str(target)]
-        logo_fraction = int(self.logo_size.get().rstrip("%")) / 100.0
+        logo_fraction = int(settings["logo_size"].rstrip("%")) / 100.0
         logo_width = max(16, round(520 * logo_fraction))
         margin = 8
         opacity = 0.92
@@ -660,79 +638,84 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
             f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=5[shadow];"
             f"[base][shadow]overlay={margin + 3}:{margin + 3}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
         )
-        return [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source), "-loop", "1", "-i", self.logo_path.get(), "-filter_complex", graph, "-map", "[outv]", "-frames:v", "1", str(target)]
+        return [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source), "-loop", "1", "-i", settings["logo_path"], "-filter_complex", graph, "-map", "[outv]", "-frames:v", "1", str(target)]
 
-    def command(self, source: Path, target: Path, low_res: bool = False):
-        base_filter = self.video_filter()
+    def command(self, source: Path, target: Path, settings, low_res: bool = False):
+        base_filter = self.video_filter(settings)
         if low_res:
-            width, height = (int(v) for v in self.low_resolution.get().split("x"))
+            width, height = (int(v) for v in settings["low_resolution"].split("x"))
             base_filter += f",scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
-        volume = f"volume={self.volume.get():.4f}"
-        if not self.logo_enabled.get() and not low_res:
+        volume = f"volume={settings['volume']:.4f}"
+        if not settings["logo_enabled"] and not low_res:
             return [ffmpeg_path(), "-y", "-i", str(source), "-vf", base_filter, "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target)]
-        frame_width = int(self.low_resolution.get().split("x")[0]) if low_res else self.video_dimensions(source)[0]
-        logo_fraction = int(self.logo_size.get().rstrip("%")) / 100.0
+        frame_width = int(settings["low_resolution"].split("x")[0]) if low_res else self.video_dimensions(source)[0]
+        logo_fraction = int(settings["logo_size"].rstrip("%")) / 100.0
         logo_width = max(16, round(frame_width * logo_fraction))
         margin = max(8, round(frame_width * 0.0125))
         opacity = 0.82 if low_res else 0.92
         shadow = 0.70
-        graph = (
-            f"[0:v]{base_filter}[base];"
-            f"[1:v]format=rgba,colorchannelmixer=aa={opacity:.3f},scale=iw*main_w/iw*{width:.4f}:-1[logo];"
-            f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=8[shadow];"
-            f"[base][shadow]overlay={margin + 5}:{margin + 5}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
-        )
         graph = (
             f"[0:v]{base_filter}[base];[1:v]format=rgba,colorchannelmixer=aa={opacity:.3f}[rawlogo];"
             f"[rawlogo]scale=w={logo_width}:h=-1:force_original_aspect_ratio=decrease,setsar=1[logo];"
             f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=8[shadow];"
             f"[base][shadow]overlay={margin + 5}:{margin + 5}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
         )
-        return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", self.logo_path.get(), "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
+        return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", settings["logo_path"], "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "medium", "-crf", "18", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
 
-    def process_batch(self, output: Path, low_output: Path | None = None):
-        selected = self.selected_clips()
+    def process_batch(self, output: Path, low_output: Path | None, settings, selected, output_names):
         results = []
-        task_total = len(selected) * (2 if low_output is not None else 1)
-        task_index = 0
-        for index, clip in enumerate(selected):
-            target = output / self.output_name(index)
-            duration = self.video_duration(clip.source)
-            self.root.after(0, lambda c=clip: c.status.set("Full resolution 0%"))
-            self.root.after(0, self.refresh_tree)
-            return_code, full_log = self.run_export(self.command(clip.source, target), duration, clip, "Full resolution", task_index, task_total)
-            task_index += 1
-            ok = return_code == 0 and target.exists()
-            low_target = None
-            low_error = ""
-            if ok and low_output is not None:
-                low_target = low_output / self.output_name(index)
-                self.root.after(0, lambda c=clip: c.status.set("Low resolution 0%"))
-                low_code, low_log = self.run_export(self.command(clip.source, low_target, low_res=True), duration, clip, "Low resolution", task_index, task_total)
+        try:
+            task_total = len(selected) * (2 if low_output is not None else 1)
+            task_index = 0
+            for index, clip in enumerate(selected):
+                target = output / output_names[index]
+                duration = self.video_duration(clip.source)
+                self.root.after(0, lambda c=clip: c.status.set("Starting FFmpeg…"))
+                self.root.after(0, self.refresh_tree)
+                return_code, full_log = self.run_export(self.command(clip.source, target, settings), duration, clip, "Full resolution", task_index, task_total)
                 task_index += 1
-                low_ok = low_code == 0 and low_target.exists()
-                ok = ok and low_ok
-                if not low_ok:
-                    low_error = low_log[-2000:]
-            elif low_output is not None:
-                task_index += 1
-            status = "Complete" if ok else "Failed"
-            clip.status.set(status)
-            results.append({"source": str(clip.source), "output": str(target), "low_res_output": str(low_target) if low_target else None, "status": status, "error": "" if ok else (low_error or full_log[-2000:])})
-            self.root.after(0, lambda p=task_index / task_total * 100: self.overall.configure(value=p))
-            self.root.after(0, lambda done=task_index, total=task_total: self.summary.config(text=f"Creating videos: {done} of {total} outputs completed"))
-            self.root.after(0, self.refresh_tree)
-        (output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
-        if low_output is not None:
-            (low_output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
-        completed = sum(r["status"] == "Complete" for r in results)
+                ok = return_code == 0 and target.exists()
+                low_target = None
+                low_error = ""
+                if ok and low_output is not None:
+                    low_target = low_output / output_names[index]
+                    self.root.after(0, lambda c=clip: c.status.set("Starting low-res FFmpeg…"))
+                    low_code, low_log = self.run_export(self.command(clip.source, low_target, settings, low_res=True), duration, clip, "Low resolution", task_index, task_total)
+                    task_index += 1
+                    low_ok = low_code == 0 and low_target.exists()
+                    ok = ok and low_ok
+                    if not low_ok:
+                        low_error = low_log[-2000:]
+                elif low_output is not None:
+                    task_index += 1
+                status = "Complete" if ok else "Failed"
+                self.root.after(0, lambda c=clip, s=status: c.status.set(s))
+                results.append({"source": str(clip.source), "output": str(target), "low_res_output": str(low_target) if low_target else None, "status": status, "error": "" if ok else (low_error or full_log[-2000:])})
+                self.root.after(0, lambda p=task_index / task_total * 100: self.overall.configure(value=p))
+                self.root.after(0, lambda done=task_index, total=task_total: self.summary.config(text=f"Creating videos: {done} of {total} outputs completed"))
+                self.root.after(0, self.refresh_tree)
+            (output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+            if low_output is not None:
+                (low_output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+            completed = sum(r["status"] == "Complete" for r in results)
+            folders = f"Full resolution:\n{output}"
+            if low_output is not None:
+                folders += f"\n\nLow resolution:\n{low_output}"
+            self.root.after(0, lambda: self._processing_finished(completed, len(results), folders))
+        except Exception as exc:
+            self.root.after(0, lambda message=str(exc): self._processing_failed(message))
+
+    def _processing_finished(self, completed, total, folders):
         self.processing = False
-        self.root.after(0, lambda: self.run_button.state(["!disabled"]))
-        folders = f"Full resolution:\n{output}"
-        if low_output is not None:
-            folders += f"\n\nLow resolution:\n{low_output}"
-        self.root.after(0, lambda: self.summary.config(text=f"Finished: {completed} of {len(results)} videos created."))
-        self.root.after(0, lambda: messagebox.showinfo(APP_NAME, f"Finished.\n\n{completed} of {len(results)} videos were created.\n\n{folders}"))
+        self.run_button.state(["!disabled"])
+        self.summary.config(text=f"Finished: {completed} of {total} videos created.")
+        messagebox.showinfo(APP_NAME, f"Finished.\n\n{completed} of {total} videos were created.\n\n{folders}")
+
+    def _processing_failed(self, message):
+        self.processing = False
+        self.run_button.state(["!disabled"])
+        self.summary.config(text="Video processing stopped—see the error message.")
+        messagebox.showerror(APP_NAME, f"Video processing could not continue.\n\n{message}")
 
 
 if __name__ == "__main__":
