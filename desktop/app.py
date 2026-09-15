@@ -17,7 +17,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.12"
+APP_VERSION = "1.3.13"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -49,6 +49,8 @@ class TPSVideoEditor:
         self.preview_image = None
         self.app_icon_image = None
         self.processing = False
+        self.stop_requested = threading.Event()
+        self.active_process = None
         self.preview_job = None
         self.preview_generation = 0
         self.preview_duration_cache = {}
@@ -95,6 +97,7 @@ class TPSVideoEditor:
         style.configure("Card.TLabel", background="white")
         style.configure("Title.TLabel", background="#073f49", foreground="white", font=("Segoe UI Semibold", 22))
         style.configure("Primary.TButton", font=("Segoe UI Semibold", 10), padding=(14, 9))
+        style.configure("Busy.TLabel", background="#ef7d00", foreground="white", font=("Segoe UI Semibold", 11), padding=(10, 8))
         style.configure("TButton", padding=(10, 7))
         style.configure("TLabelframe", background="white", padding=12)
         style.configure("TLabelframe.Label", background="white", foreground="#073f49", font=("Segoe UI Semibold", 11))
@@ -213,7 +216,7 @@ class TPSVideoEditor:
         self._slider(edits, "Volume", self.volume, 0.0, 4.0)
         auto_row = ttk.Frame(edits, style="Card.TFrame")
         auto_row.pack(fill="x", pady=(7, 0))
-        ttk.Checkbutton(auto_row, text="Auto Correct", variable=self.auto_correct, command=self._adjustment_changed).pack(side="left")
+        ttk.Checkbutton(auto_row, text="Auto Exposure", variable=self.auto_correct, command=self._adjustment_changed).pack(side="left")
         ttk.Checkbutton(auto_row, text="Auto White Balance", variable=self.auto_white_balance, command=self._adjustment_changed).pack(side="left", padx=8)
         preset_row = ttk.Frame(edits, style="Card.TFrame")
         preset_row.pack(fill="x", pady=(7, 0))
@@ -231,6 +234,11 @@ class TPSVideoEditor:
 
         self.run_button = ttk.Button(right, text="CREATE EDITED VIDEOS", style="Primary.TButton", command=self.start_processing)
         self.run_button.pack(fill="x", pady=(12, 4))
+        self.busy_notice = ttk.Label(right, text="READY TO EXPORT", anchor="center", style="Card.TLabel")
+        self.busy_notice.pack(fill="x", pady=(2, 4))
+        self.stop_button = ttk.Button(right, text="STOP EXPORTING", command=self.request_stop)
+        self.stop_button.pack(fill="x", pady=(0, 4))
+        self.stop_button.state(["disabled"])
         self.overall = ttk.Progressbar(right, maximum=100)
         self.overall.pack(fill="x")
         self.summary = ttk.Label(right, text="Original SD-card files are never changed.", wraplength=360)
@@ -310,7 +318,7 @@ White balance — Corrects an overall blue or amber colour cast. Default: 0.00.
 Warmth — Adds warmer orange tones or cooler blue tones. Default: 0.00.
 Saturation — Controls colour intensity. Default: 1.00.
 Volume — 0 is silent, 1 is original volume, and up to 4 boosts very quiet nights. Boosted audio is peak-limited to reduce clipping. Default: 1.00.
-Auto Correct — Automatically normalises exposure and tonal range through the full video. Default: OFF.
+Auto Exposure — Analyses and adjusts exposure continuously through the video. Changes are smoothed over neighbouring frames to prevent flicker or sudden brightness pumping. Default: OFF.
 Auto White Balance — Applies a conservative colour correction through the full video. It is designed to preserve skin tones and resist sudden yellow/green shifts in night footage. Default: OFF.
 Reset adjustments — Restores every correction slider and automatic option to its startup default.
 
@@ -325,11 +333,11 @@ The permanent BEFORE/AFTER viewer is part of the main window. Select a video, mo
 
 PROGRESS AND SAFETY
 
-The status column shows the current file, output stage and percentage. The lower progress bar shows the complete batch. Original SD-card files are never modified or deleted.
+The orange BUSY notice, status column and progress bar show the current export. Stop Exporting asks for confirmation, keeps completed videos and removes the incomplete file currently being written. Original SD-card files are never modified or deleted.
 
 STARTUP DEFAULTS — VERSION {APP_VERSION}
 
-Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Low-resolution copies OFF | TPS logo ON | Logo size 15%
+Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Low-resolution copies OFF | TPS logo ON | Logo size 15%
 """)
         guide.config(state="disabled")
         ttk.Button(frame, text="Close instructions", command=win.destroy).pack(pady=(10, 0))
@@ -518,6 +526,8 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
     def run_export(self, command, duration: float, clip: Clip, stage: str, task_index: int, task_total: int):
         progress_command = command[:-1] + ["-progress", "pipe:1", "-nostats", command[-1]]
         proc = self.popen_hidden(progress_command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        self.active_process = proc
+        self.root.after(0, lambda s=stage, n=clip.source.name: self.busy_notice.config(text=f"BUSY — {s.upper()}\n{n}", style="Busy.TLabel"))
         recent = deque(maxlen=80)
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -530,10 +540,26 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
                     overall_percent = ((task_index + current_percent / 100.0) / task_total) * 100
                     self.root.after(0, lambda p=overall_percent: self.overall.configure(value=p))
                     self.root.after(0, lambda c=clip, s=stage, p=current_percent: c.status.set(f"{s} {p:.0f}%"))
+                    self.root.after(0, lambda s=stage, n=clip.source.name, p=current_percent: self.busy_notice.config(text=f"BUSY — {s.upper()} {p:.0f}%\n{n}", style="Busy.TLabel"))
                     self.root.after(0, self.refresh_tree)
                 except ValueError:
                     pass
-        return proc.wait(), "\n".join(recent)
+        code = proc.wait()
+        self.active_process = None
+        return code, "\n".join(recent)
+
+    def request_stop(self):
+        if not self.processing:
+            return
+        if not messagebox.askyesno(APP_NAME, "Stop exporting now?\n\nCompleted videos will be kept. The incomplete video currently being created will be removed."):
+            return
+        self.stop_requested.set()
+        self.stop_button.state(["disabled"])
+        self.busy_notice.config(text="STOPPING EXPORT SAFELY…", style="Busy.TLabel")
+        self.summary.config(text="Stopping after the current FFmpeg process closes…")
+        proc = self.active_process
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
 
     def validate(self):
         if not self.selected_clips():
@@ -564,7 +590,10 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
             self.summary.config(text="Could not create the output folder.")
             return messagebox.showerror(APP_NAME, f"The output folder could not be created.\n\n{exc}")
         self.processing = True
+        self.stop_requested.clear()
         self.run_button.state(["disabled"])
+        self.stop_button.state(["!disabled"])
+        self.busy_notice.config(text="BUSY — PREPARING EXPORT…", style="Busy.TLabel")
         self.summary.config(text="Starting video processing…")
         self.overall.configure(value=0)
         settings = self.settings_snapshot()
@@ -683,17 +712,26 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
 
     def process_batch(self, output: Path, low_output: Path | None, settings, selected, output_names):
         results = []
+        completed_outputs = 0
         try:
             task_total = len(selected) * (2 if low_output is not None else 1)
             task_index = 0
             for index, clip in enumerate(selected):
+                if self.stop_requested.is_set():
+                    break
                 target = output / output_names[index]
                 duration = self.video_duration(clip.source)
                 self.root.after(0, lambda c=clip: c.status.set("Starting FFmpeg…"))
                 self.root.after(0, self.refresh_tree)
                 return_code, full_log = self.run_export(self.command(clip.source, target, settings), duration, clip, "Full resolution", task_index, task_total)
+                if self.stop_requested.is_set():
+                    target.unlink(missing_ok=True)
+                    self.root.after(0, lambda c=clip: c.status.set("Stopped"))
+                    break
                 task_index += 1
                 ok = return_code == 0 and target.exists()
+                if ok:
+                    completed_outputs += 1
                 low_target = None
                 low_error = ""
                 if ok and low_output is not None:
@@ -701,8 +739,14 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
                     self.root.after(0, lambda c=clip: c.status.set("Starting low-res FFmpeg…"))
                     low_command = self.low_res_from_completed_command(target, low_target, settings) if settings["logo_enabled"] else self.command(clip.source, low_target, settings, low_res=True)
                     low_code, low_log = self.run_export(low_command, duration, clip, "Low resolution", task_index, task_total)
+                    if self.stop_requested.is_set():
+                        low_target.unlink(missing_ok=True)
+                        self.root.after(0, lambda c=clip: c.status.set("Stopped"))
+                        break
                     task_index += 1
                     low_ok = low_code == 0 and low_target.exists()
+                    if low_ok:
+                        completed_outputs += 1
                     ok = ok and low_ok
                     if not low_ok:
                         low_error = low_log[-2000:]
@@ -718,6 +762,9 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
             if low_output is not None:
                 (low_output / "TPS export summary.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
             completed = sum(r["status"] == "Complete" for r in results)
+            if self.stop_requested.is_set():
+                self.root.after(0, lambda: self._processing_stopped(completed_outputs, output, low_output))
+                return
             folders = f"Full resolution:\n{output}"
             if low_output is not None:
                 folders += f"\n\nLow resolution:\n{low_output}"
@@ -728,14 +775,30 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
     def _processing_finished(self, completed, total, folders):
         self.processing = False
         self.run_button.state(["!disabled"])
+        self.stop_button.state(["disabled"])
+        self.busy_notice.config(text="EXPORT COMPLETE", style="Card.TLabel")
         self.summary.config(text=f"Finished: {completed} of {total} videos created.")
         messagebox.showinfo(APP_NAME, f"Finished.\n\n{completed} of {total} videos were created.\n\n{folders}")
 
     def _processing_failed(self, message):
         self.processing = False
         self.run_button.state(["!disabled"])
+        self.stop_button.state(["disabled"])
+        self.busy_notice.config(text="EXPORT STOPPED — ERROR", style="Card.TLabel")
         self.summary.config(text="Video processing stopped—see the error message.")
         messagebox.showerror(APP_NAME, f"Video processing could not continue.\n\n{message}")
+
+    def _processing_stopped(self, completed, output, low_output):
+        self.processing = False
+        self.active_process = None
+        self.run_button.state(["!disabled"])
+        self.stop_button.state(["disabled"])
+        self.busy_notice.config(text="EXPORT STOPPED BY USER", style="Card.TLabel")
+        self.summary.config(text=f"Export stopped. {completed} completed video(s) were kept.")
+        locations = f"Completed files kept in:\n{output}"
+        if low_output is not None:
+            locations += f"\n\nLow-resolution files:\n{low_output}"
+        messagebox.showinfo(APP_NAME, f"Export stopped.\n\n{completed} completed video(s) were kept. The incomplete current file was removed.\n\n{locations}")
 
 
 if __name__ == "__main__":
