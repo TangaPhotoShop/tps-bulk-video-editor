@@ -1,5 +1,5 @@
 #define MyAppName "TPS Bulk Video Editor"
-#define MyAppVersion "1.3.9"
+#define MyAppVersion "1.3.10"
 #define MyAppPublisher "Tangalooma Photo Shop"
 #define MyAppExeName "TPS Bulk Video Editor.exe"
 
@@ -7,11 +7,12 @@
 AppId={{85F6DFE9-E663-4FBB-9801-5B8BECD9B17E}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} v{#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\TPS Bulk Video Editor
 DefaultGroupName={#MyAppName}
 OutputDir=dist
-OutputBaseFilename=TPS Bulk Video Editor Setup
+OutputBaseFilename=TPS.Bulk.Video.Editor.Setup.v{#MyAppVersion}
 SetupIconFile=branding\tps-video-editor-icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
