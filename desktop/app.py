@@ -53,6 +53,9 @@ class TPSVideoEditor:
         self.photographer = StringVar(value="DM")
         self.start_number = IntVar(value=1)
         self.folder_name = StringVar(value="TPS Edited Videos")
+        self.first_filename = StringVar(value=f"{self.job_date.get()}-DOL-DM-0001.MP4")
+        self.auto_correct = BooleanVar(value=False)
+        self.auto_white_balance = BooleanVar(value=False)
         self.exposure = DoubleVar(value=0.0)
         self.contrast = DoubleVar(value=1.0)
         self.warmth = DoubleVar(value=0.0)
@@ -124,11 +127,12 @@ class TPSVideoEditor:
 
         naming = ttk.LabelFrame(right, text="2. Rename and output")
         naming.pack(fill="x")
-        self._field(naming, "Date", self.job_date)
-        self._field(naming, "Activity code", self.activity)
-        self._field(naming, "Photographer initials", self.photographer)
-        self._field(naming, "Starting number", self.start_number)
-        self._field(naming, "New folder name", self.folder_name)
+        self._field(naming, "First output filename", self.first_filename)
+        ttk.Label(naming, text="Example: 14-SEP-2026-DOL-SW-001.MP4", style="Card.TLabel").pack(anchor="w", pady=(0, 4))
+        folder_row = ttk.Frame(naming, style="Card.TFrame")
+        folder_row.pack(fill="x", pady=3)
+        ttk.Label(folder_row, text="New folder name", width=19, style="Card.TLabel").pack(side="left")
+        ttk.Label(folder_row, textvariable=self.folder_name, style="Card.TLabel", wraplength=210).pack(side="left", fill="x", expand=True)
         dest_row = ttk.Frame(naming, style="Card.TFrame")
         dest_row.pack(fill="x", pady=4)
         ttk.Entry(dest_row, textvariable=self.destination).pack(side="left", fill="x", expand=True)
@@ -142,6 +146,10 @@ class TPSVideoEditor:
         self._slider(edits, "Red balance", self.red_balance, 0.8, 1.2)
         self._slider(edits, "Blue balance", self.blue_balance, 0.8, 1.2)
         self._slider(edits, "Volume", self.volume, 0.0, 2.0)
+        auto_row = ttk.Frame(edits, style="Card.TFrame")
+        auto_row.pack(fill="x", pady=(7, 0))
+        ttk.Checkbutton(auto_row, text="Auto Correct", variable=self.auto_correct).pack(side="left")
+        ttk.Checkbutton(auto_row, text="Auto White Balance", variable=self.auto_white_balance).pack(side="left", padx=8)
         preset_row = ttk.Frame(edits, style="Card.TFrame")
         preset_row.pack(fill="x", pady=(7, 0))
         ttk.Button(preset_row, text="Neutral", command=self.neutral).pack(side="left")
@@ -165,8 +173,7 @@ class TPSVideoEditor:
         self.summary = ttk.Label(right, text="Original SD-card files are never changed.", wraplength=360)
         self.summary.pack(fill="x", pady=7)
 
-        for variable in (self.job_date, self.activity, self.photographer, self.start_number):
-            variable.trace_add("write", lambda *_: self.refresh_tree())
+        self.first_filename.trace_add("write", lambda *_: self.filename_changed())
 
     def _field(self, parent, label, variable):
         row = ttk.Frame(parent, style="Card.TFrame")
@@ -207,11 +214,25 @@ class TPSVideoEditor:
         self.clips = [Clip(p, BooleanVar(value=True), StringVar(value="Ready"), DoubleVar(value=0)) for p in paths]
         self.refresh_tree()
 
+    def filename_parts(self):
+        value = Path(self.first_filename.get().strip()).name
+        if not value.lower().endswith(".mp4"):
+            value += ".MP4"
+        stem = Path(value).stem
+        match = re.match(r"^(.*?)[-_](\d+)$", stem)
+        if match:
+            prefix, number = match.groups()
+            return clean_code(prefix, "TPS-VIDEO"), int(number), max(3, len(number))
+        return clean_code(stem, "TPS-VIDEO"), 1, 4
+
+    def filename_changed(self):
+        prefix, _, _ = self.filename_parts()
+        self.folder_name.set(prefix)
+        self.refresh_tree()
+
     def output_name(self, index: int) -> str:
-        date = clean_code(self.job_date.get(), datetime.now().strftime("%d-%b-%Y"))
-        activity = clean_code(self.activity.get(), "VIDEO")
-        photographer = clean_code(self.photographer.get(), "TPS")
-        return f"{date}-{activity}-{photographer}-{self.start_number.get() + index:04d}.MP4"
+        prefix, start, width = self.filename_parts()
+        return f"{prefix}-{start + index:0{width}d}.MP4"
 
     def refresh_tree(self):
         self.tree.delete(*self.tree.get_children())
@@ -257,18 +278,69 @@ class TPSVideoEditor:
         clips = self.selected_clips()
         if not clips:
             return messagebox.showinfo(APP_NAME, "Select a video first.")
-        clip = clips[0]
-        tmp = Path(tempfile.gettempdir()) / "tps-video-preview.jpg"
-        subprocess.run([ffmpeg_path(), "-y", "-ss", "5", "-i", str(clip.source), "-frames:v", "1", str(tmp)], capture_output=True)
-        if not tmp.exists():
-            return messagebox.showerror(APP_NAME, "A preview could not be created for this clip.")
         win = Toplevel(self.root)
-        win.title(f"Preview — {clip.source.name}")
-        image = Image.open(tmp)
-        image.thumbnail((1000, 620))
-        self.preview_image = ImageTk.PhotoImage(image)
-        ttk.Label(win, image=self.preview_image).pack(padx=12, pady=12)
-        ttk.Label(win, text="Preview frame only. Final adjustments are applied during export.").pack(pady=(0, 12))
+        win.title("Batch preview — before and after")
+        win.geometry("1120x760")
+        selected_name = StringVar(value=clips[0].source.name)
+        top = ttk.Frame(win, padding=10)
+        top.pack(fill="x")
+        ttk.Label(top, text="Video").pack(side="left")
+        chooser = ttk.Combobox(top, textvariable=selected_name, values=[c.source.name for c in clips], state="readonly", width=55)
+        chooser.pack(side="left", padx=8)
+        status = ttk.Label(top, text="Loading preview…")
+        status.pack(side="right")
+        images = ttk.Frame(win, padding=10)
+        images.pack(fill="both", expand=True)
+        before = ttk.Label(images, text="BEFORE", anchor="center")
+        before.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        after = ttk.Label(images, text="AFTER — export settings", anchor="center")
+        after.pack(side="left", fill="both", expand=True, padx=(5, 0))
+        timeline = DoubleVar(value=15)
+        slider = ttk.Scale(win, variable=timeline, from_=0, to=100)
+        slider.pack(fill="x", padx=18)
+        ttk.Label(win, text="Drag through the whole video, then select Update preview. The AFTER image uses the same corrections and logo as export.").pack(pady=5)
+
+        def render():
+            clip = next(c for c in clips if c.source.name == selected_name.get())
+            status.config(text="Creating preview…")
+            threading.Thread(target=self._render_preview_pair, args=(clip.source, timeline.get(), before, after, status), daemon=True).start()
+
+        ttk.Button(win, text="Update preview", style="Primary.TButton", command=render).pack(pady=(5, 12))
+        chooser.bind("<<ComboboxSelected>>", lambda _e: render())
+        render()
+
+    def _render_preview_pair(self, source: Path, percent: float, before_label, after_label, status_label):
+        duration = self.video_duration(source)
+        timestamp = max(0, duration * percent / 100.0)
+        token = re.sub(r"\W+", "-", source.stem)[:35]
+        temp = Path(tempfile.gettempdir())
+        before_path = temp / f"tps-before-{token}.jpg"
+        after_path = temp / f"tps-after-{token}.jpg"
+        common = [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source)]
+        subprocess.run(common + ["-frames:v", "1", "-vf", "scale=520:-2", str(before_path)], capture_output=True)
+        subprocess.run(self.preview_frame_command(source, timestamp, after_path), capture_output=True)
+        if not before_path.exists() or not after_path.exists():
+            self.root.after(0, lambda: status_label.config(text="Preview could not be created"))
+            return
+        def show():
+            before_image = Image.open(before_path); before_image.thumbnail((520, 580))
+            after_image = Image.open(after_path); after_image.thumbnail((520, 580))
+            before_photo = ImageTk.PhotoImage(before_image)
+            after_photo = ImageTk.PhotoImage(after_image)
+            before_label.config(image=before_photo, text="")
+            after_label.config(image=after_photo, text="")
+            before_label.image = before_photo
+            after_label.image = after_photo
+            status_label.config(text=f"{timestamp:.1f}s of {duration:.1f}s")
+        self.root.after(0, show)
+
+    def video_duration(self, source: Path) -> float:
+        proc = subprocess.run([ffmpeg_path(), "-i", str(source)], capture_output=True, text=True)
+        match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr)
+        if not match:
+            return 1.0
+        hours, minutes, seconds = match.groups()
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
     def validate(self):
         if not self.selected_clips():
@@ -296,11 +368,32 @@ class TPSVideoEditor:
     def video_filter(self):
         brightness = max(-1.0, min(1.0, self.exposure.get() / 2.0))
         saturation = 1.0 + self.warmth.get() * 0.35
-        filters = [
+        filters = []
+        if self.auto_correct.get():
+            filters.append("normalize=blackpt=black:whitept=white:smoothing=50")
+        if self.auto_white_balance.get():
+            filters.append("grayworld")
+        filters += [
             f"eq=brightness={brightness:.4f}:contrast={self.contrast.get():.4f}:saturation={saturation:.4f}",
             f"colorchannelmixer=rr={self.red_balance.get() + max(0, self.warmth.get()):.4f}:bb={self.blue_balance.get() + max(0, -self.warmth.get()):.4f}",
         ]
         return ",".join(filters)
+
+    def preview_frame_command(self, source: Path, timestamp: float, target: Path):
+        base_filter = self.video_filter() + ",scale=520:-2"
+        if not self.logo_enabled.get():
+            return [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source), "-frames:v", "1", "-vf", base_filter, str(target)]
+        width = self.logo_width.get() / 100.0
+        margin = max(8, int(self.logo_margin.get() * 520 / 1920))
+        opacity = self.logo_opacity.get()
+        shadow = self.shadow.get()
+        graph = (
+            f"[0:v]{base_filter}[base];[1:v]format=rgba,colorchannelmixer=aa={opacity:.3f}[rawlogo];"
+            f"[rawlogo][base]scale2ref=w=main_w*{width:.4f}:h=-1[logo][base2];"
+            f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=5[shadow];"
+            f"[base2][shadow]overlay={margin + 3}:{margin + 3}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
+        )
+        return [ffmpeg_path(), "-y", "-ss", f"{timestamp:.3f}", "-i", str(source), "-loop", "1", "-i", self.logo_path.get(), "-filter_complex", graph, "-map", "[outv]", "-frames:v", "1", str(target)]
 
     def command(self, source: Path, target: Path):
         base_filter = self.video_filter()
@@ -352,4 +445,3 @@ if __name__ == "__main__":
     root = Tk()
     TPSVideoEditor(root)
     root.mainloop()
-
