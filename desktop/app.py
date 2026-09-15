@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -17,7 +19,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.13"
+APP_VERSION = "1.3.14"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -30,12 +32,23 @@ def ffmpeg_path() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
+def human_size(byte_count: int) -> str:
+    value = float(max(0, byte_count))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.0f} {unit}" if unit in ("B", "KB") else f"{value:.1f} {unit}"
+        value /= 1024
+    return "0 B"
+
+
 @dataclass
 class Clip:
     source: Path
     selected: BooleanVar
     status: StringVar
     progress: DoubleVar
+    full_size: StringVar
+    low_size: StringVar
 
 
 class TPSVideoEditor:
@@ -54,6 +67,8 @@ class TPSVideoEditor:
         self.preview_job = None
         self.preview_generation = 0
         self.preview_duration_cache = {}
+        self.last_output_folder = None
+        self.export_started_at = None
 
         self.source = StringVar()
         self.destination = StringVar()
@@ -66,6 +81,7 @@ class TPSVideoEditor:
         self.low_res_enabled = BooleanVar(value=False)
         self.low_destination = StringVar()
         self.low_resolution = StringVar(value="640x480")
+        self.export_quality = DoubleVar(value=85.0)
         self.auto_correct = BooleanVar(value=False)
         self.auto_white_balance = BooleanVar(value=False)
         self.exposure = DoubleVar(value=0.0)
@@ -137,7 +153,7 @@ class TPSVideoEditor:
         self.count_label = ttk.Label(actions, text="0 videos", style="Card.TLabel")
         self.count_label.pack(side="right")
 
-        columns = ("use", "source", "output", "status")
+        columns = ("use", "source", "original_size", "output", "new_size", "low_size", "status")
         tree_frame = ttk.Frame(files, style="Card.TFrame")
         tree_frame.pack(fill="both", expand=True)
         tree_scroll_y = ttk.Scrollbar(tree_frame, orient="vertical")
@@ -150,11 +166,17 @@ class TPSVideoEditor:
         tree_scroll_x.config(command=self.tree.xview)
         self.tree.heading("use", text="Use")
         self.tree.heading("source", text="Source file")
+        self.tree.heading("original_size", text="Original size")
         self.tree.heading("output", text="New filename")
+        self.tree.heading("new_size", text="New size")
+        self.tree.heading("low_size", text="Low-res size")
         self.tree.heading("status", text="Status")
         self.tree.column("use", width=52, anchor="center")
-        self.tree.column("source", width=260)
-        self.tree.column("output", width=285)
+        self.tree.column("source", width=220)
+        self.tree.column("original_size", width=90, anchor="e")
+        self.tree.column("output", width=250)
+        self.tree.column("new_size", width=85, anchor="e")
+        self.tree.column("low_size", width=90, anchor="e")
         self.tree.column("status", width=120)
         tree_scroll_y.pack(side="right", fill="y")
         tree_scroll_x.pack(side="bottom", fill="x")
@@ -201,6 +223,13 @@ class TPSVideoEditor:
         ttk.Entry(low_row, textvariable=self.low_destination).pack(side="left", fill="x", expand=True)
         ttk.Button(low_row, text="Low-res destination", command=self.choose_low_destination).pack(side="left", padx=(6, 0))
         ttk.Label(naming, text="Folder: filename prefix + -low res", style="Card.TLabel").pack(anchor="w")
+        quality_row = ttk.Frame(naming, style="Card.TFrame")
+        quality_row.pack(fill="x", pady=(8, 2))
+        ttk.Label(quality_row, text="Export quality", width=15, style="Card.TLabel").pack(side="left")
+        quality_value = ttk.Label(quality_row, text="85%", width=5, style="Card.TLabel")
+        quality_value.pack(side="right")
+        ttk.Scale(quality_row, variable=self.export_quality, from_=0, to=100, command=lambda _v: quality_value.config(text=f"{self.export_quality.get():.0f}%")).pack(side="left", fill="x", expand=True)
+        ttk.Label(naming, text="85% default • 70–100 recommended • lower = smaller file", style="Card.TLabel").pack(anchor="w")
 
         edits = ttk.LabelFrame(right, text="4. Bulk adjustments")
         edits.pack(fill="x", pady=10)
@@ -239,6 +268,9 @@ class TPSVideoEditor:
         self.stop_button = ttk.Button(right, text="STOP EXPORTING", command=self.request_stop)
         self.stop_button.pack(fill="x", pady=(0, 4))
         self.stop_button.state(["disabled"])
+        self.open_folder_button = ttk.Button(right, text="OPEN OUTPUT FOLDER", command=self.open_output_folder)
+        self.open_folder_button.pack(fill="x", pady=(0, 4))
+        self.open_folder_button.state(["disabled"])
         self.overall = ttk.Progressbar(right, maximum=100)
         self.overall.pack(fill="x")
         self.summary = ttk.Label(right, text="Original SD-card files are never changed.", wraplength=360)
@@ -305,6 +337,14 @@ LOW-RESOLUTION COPIES
 Also create low-res watermarked copies — Creates a second upload-ready batch with the same filenames.
 Resolution — 640x480, 854x480 or 1280x720. The image is never stretched; padding is added when required.
 Low-res destination — Optional separate location. Its folder name ends with -low res.
+Export quality — Controls video compression from 0 to 100 without changing the full-resolution dimensions. Default: 85%. Higher values create larger, cleaner files; 70–100 is recommended. Exact file size depends on the footage.
+
+FILE SIZES AND OUTPUT
+
+Original size — Shown before export for each source video.
+New size and Low-res size — Update while each output is being written and show the exact final sizes after completion.
+Free-space check — Before starting, the app checks that the full-resolution destination has enough estimated free space.
+Open Output Folder — Becomes available after an export finishes, stops or encounters an error, so completed files can be reached immediately.
 
 BULK ADJUSTMENTS
 
@@ -333,11 +373,11 @@ The permanent BEFORE/AFTER viewer is part of the main window. Select a video, mo
 
 PROGRESS AND SAFETY
 
-The orange BUSY notice, status column and progress bar show the current export. Stop Exporting asks for confirmation, keeps completed videos and removes the incomplete file currently being written. Original SD-card files are never modified or deleted.
+The orange BUSY notice, status column, progress bar and estimated time remaining show the current export. Stop Exporting asks for confirmation, keeps completed videos and removes the incomplete file currently being written. Original SD-card files are never modified or deleted.
 
 STARTUP DEFAULTS — VERSION {APP_VERSION}
 
-Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Low-resolution copies OFF | TPS logo ON | Logo size 15%
+Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Export quality 85% | Low-resolution copies OFF | TPS logo ON | Logo size 15%
 """)
         guide.config(state="disabled")
         ttk.Button(frame, text="Close instructions", command=win.destroy).pack(pady=(10, 0))
@@ -366,7 +406,7 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
 
     def load_clips(self, folder: Path):
         paths = sorted(p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS)
-        self.clips = [Clip(p, BooleanVar(value=True), StringVar(value="Ready"), DoubleVar(value=0)) for p in paths]
+        self.clips = [Clip(p, BooleanVar(value=True), StringVar(value="Ready"), DoubleVar(value=0), StringVar(value="—"), StringVar(value="—")) for p in paths]
         names = [p.name for p in paths]
         self.preview_chooser["values"] = names
         self.preview_selected_name.set(names[0] if names else "")
@@ -403,7 +443,11 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
                 selected_index += 1
             else:
                 name = "—"
-            self.tree.insert("", "end", iid=str(index), values=("✓" if clip.selected.get() else "", clip.source.name, name, clip.status.get()))
+            try:
+                original_size = human_size(clip.source.stat().st_size)
+            except OSError:
+                original_size = "Unavailable"
+            self.tree.insert("", "end", iid=str(index), values=("✓" if clip.selected.get() else "", clip.source.name, original_size, name, clip.full_size.get(), clip.low_size.get(), clip.status.get()))
         self.count_label.config(text=f"{selected_index} of {len(self.clips)} videos selected")
 
     def toggle_row(self, event):
@@ -538,9 +582,17 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
                     seconds = int(line.split("=", 1)[1]) / 1_000_000
                     current_percent = min(100.0, seconds / max(duration, 0.1) * 100)
                     overall_percent = ((task_index + current_percent / 100.0) / task_total) * 100
+                    target = Path(command[-1])
+                    current_size = human_size(target.stat().st_size) if target.exists() else "0 B"
+                    size_var = clip.low_size if stage.startswith("Low") else clip.full_size
+                    elapsed = max(0.1, time.monotonic() - self.export_started_at) if self.export_started_at else 0.1
+                    remaining = max(0.0, elapsed * (100.0 - overall_percent) / max(overall_percent, 0.1))
+                    eta_text = f" • about {int(remaining // 60)}m {int(remaining % 60)}s remaining" if overall_percent >= 1 else ""
                     self.root.after(0, lambda p=overall_percent: self.overall.configure(value=p))
+                    self.root.after(0, lambda v=size_var, s=current_size: v.set(s))
                     self.root.after(0, lambda c=clip, s=stage, p=current_percent: c.status.set(f"{s} {p:.0f}%"))
                     self.root.after(0, lambda s=stage, n=clip.source.name, p=current_percent: self.busy_notice.config(text=f"BUSY — {s.upper()} {p:.0f}%\n{n}", style="Busy.TLabel"))
+                    self.root.after(0, lambda p=overall_percent, e=eta_text: self.summary.config(text=f"Overall progress: {p:.0f}%{e}"))
                     self.root.after(0, self.refresh_tree)
                 except ValueError:
                     pass
@@ -560,6 +612,13 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         proc = self.active_process
         if proc is not None and proc.poll() is None:
             proc.terminate()
+
+    def open_output_folder(self):
+        if self.last_output_folder and Path(self.last_output_folder).exists():
+            if os.name == "nt":
+                os.startfile(str(self.last_output_folder))
+            else:
+                subprocess.Popen(["xdg-open", str(self.last_output_folder)])
 
     def validate(self):
         if not self.selected_clips():
@@ -581,6 +640,13 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         self.summary.config(text="Preparing output folders…")
         self.root.update_idletasks()
         try:
+            destination_parent = Path(self.destination.get())
+            destination_parent.mkdir(parents=True, exist_ok=True)
+            free_space = shutil.disk_usage(destination_parent).free
+            selected_bytes = sum(c.source.stat().st_size for c in self.selected_clips())
+            required = selected_bytes * (1.25 if self.low_res_enabled.get() else 1.1)
+            if free_space < required:
+                return messagebox.showerror(APP_NAME, f"There may not be enough free space at the destination.\n\nEstimated requirement: {human_size(int(required))}\nAvailable: {human_size(free_space)}")
             output = self.create_unique_folder(Path(self.destination.get()), clean_code(self.folder_name.get(), "TPS-Edited-Videos"))
             low_output = None
             if self.low_res_enabled.get():
@@ -590,6 +656,9 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             self.summary.config(text="Could not create the output folder.")
             return messagebox.showerror(APP_NAME, f"The output folder could not be created.\n\n{exc}")
         self.processing = True
+        self.export_started_at = time.monotonic()
+        self.last_output_folder = output
+        self.open_folder_button.state(["disabled"])
         self.stop_requested.clear()
         self.run_button.state(["disabled"])
         self.stop_button.state(["!disabled"])
@@ -631,6 +700,7 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             "logo_path": self.logo_path.get(),
             "logo_size": self.logo_size.get(),
             "low_resolution": self.low_resolution.get(),
+            "export_quality": self.export_quality.get(),
         }
 
     def video_filter(self, settings):
@@ -663,6 +733,13 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         ]
         return ",".join(filters)
 
+    @staticmethod
+    def quality_crf(quality, low_res=False):
+        """Translate a staff-friendly 0–100 quality value to FFmpeg CRF."""
+        quality = max(0.0, min(100.0, float(quality)))
+        crf = round(36 - quality * 0.20)
+        return min(40, crf + 4) if low_res else crf
+
     def preview_frame_command(self, source: Path, timestamp: float, target: Path, settings):
         base_filter = self.video_filter(settings) + ",scale=520:-2"
         if not settings["logo_enabled"]:
@@ -688,8 +765,9 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         volume = f"volume={settings['volume']:.4f}"
         if settings["volume"] > 1.0:
             volume += ",alimiter=limit=0.95:attack=5:release=50"
+        crf = str(self.quality_crf(settings["export_quality"], low_res))
         if not settings["logo_enabled"] and not low_res:
-            return [ffmpeg_path(), "-y", "-i", str(source), "-vf", base_filter, "-af", volume, "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-threads", "0", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target)]
+            return [ffmpeg_path(), "-y", "-i", str(source), "-vf", base_filter, "-af", volume, "-c:v", "libx264", "-preset", "fast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target)]
         frame_width = int(settings["low_resolution"].split("x")[0]) if low_res else self.video_dimensions(source)[0]
         logo_fraction = int(settings["logo_size"].rstrip("%")) / 100.0
         logo_width = max(16, round(frame_width * logo_fraction))
@@ -702,13 +780,14 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=8[shadow];"
             f"[base][shadow]overlay={margin + 5}:{margin + 5}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
         )
-        return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", settings["logo_path"], "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-threads", "0", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
+        return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", settings["logo_path"], "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "fast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
 
     def low_res_from_completed_command(self, source: Path, target: Path, settings):
         """Resize an already corrected/logoed export without repeating expensive filters."""
         width, height = (int(v) for v in settings["low_resolution"].split("x"))
         resize = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
-        return [ffmpeg_path(), "-y", "-i", str(source), "-vf", resize, "-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", "0", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)]
+        crf = str(self.quality_crf(settings["export_quality"], True))
+        return [ffmpeg_path(), "-y", "-i", str(source), "-vf", resize, "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)]
 
     def process_batch(self, output: Path, low_output: Path | None, settings, selected, output_names):
         results = []
@@ -732,6 +811,8 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
                 ok = return_code == 0 and target.exists()
                 if ok:
                     completed_outputs += 1
+                    full_size = human_size(target.stat().st_size)
+                    self.root.after(0, lambda c=clip, s=full_size: c.full_size.set(s))
                 low_target = None
                 low_error = ""
                 if ok and low_output is not None:
@@ -747,6 +828,8 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
                     low_ok = low_code == 0 and low_target.exists()
                     if low_ok:
                         completed_outputs += 1
+                        low_size = human_size(low_target.stat().st_size)
+                        self.root.after(0, lambda c=clip, s=low_size: c.low_size.set(s))
                     ok = ok and low_ok
                     if not low_ok:
                         low_error = low_log[-2000:]
@@ -774,25 +857,32 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
 
     def _processing_finished(self, completed, total, folders):
         self.processing = False
+        self.export_started_at = None
         self.run_button.state(["!disabled"])
         self.stop_button.state(["disabled"])
+        self.open_folder_button.state(["!disabled"])
         self.busy_notice.config(text="EXPORT COMPLETE", style="Card.TLabel")
         self.summary.config(text=f"Finished: {completed} of {total} videos created.")
         messagebox.showinfo(APP_NAME, f"Finished.\n\n{completed} of {total} videos were created.\n\n{folders}")
 
     def _processing_failed(self, message):
         self.processing = False
+        self.export_started_at = None
         self.run_button.state(["!disabled"])
         self.stop_button.state(["disabled"])
+        if self.last_output_folder and Path(self.last_output_folder).exists():
+            self.open_folder_button.state(["!disabled"])
         self.busy_notice.config(text="EXPORT STOPPED — ERROR", style="Card.TLabel")
         self.summary.config(text="Video processing stopped—see the error message.")
         messagebox.showerror(APP_NAME, f"Video processing could not continue.\n\n{message}")
 
     def _processing_stopped(self, completed, output, low_output):
         self.processing = False
+        self.export_started_at = None
         self.active_process = None
         self.run_button.state(["!disabled"])
         self.stop_button.state(["disabled"])
+        self.open_folder_button.state(["!disabled"])
         self.busy_notice.config(text="EXPORT STOPPED BY USER", style="Card.TLabel")
         self.summary.config(text=f"Export stopped. {completed} completed video(s) were kept.")
         locations = f"Completed files kept in:\n{output}"
