@@ -17,7 +17,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.8"
+APP_VERSION = "1.3.9"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -49,6 +49,8 @@ class TPSVideoEditor:
         self.preview_image = None
         self.app_icon_image = None
         self.processing = False
+        self.preview_window = None
+        self.preview_refresh = None
 
         self.source = StringVar()
         self.destination = StringVar()
@@ -63,6 +65,7 @@ class TPSVideoEditor:
         self.low_resolution = StringVar(value="640x480")
         self.auto_correct = BooleanVar(value=False)
         self.auto_white_balance = BooleanVar(value=False)
+        self.adjustment_preset = StringVar(value="Neutral")
         self.exposure = DoubleVar(value=0.0)
         self.contrast = DoubleVar(value=1.0)
         self.shadows = DoubleVar(value=0.0)
@@ -175,8 +178,20 @@ class TPSVideoEditor:
         self._slider(edits, "Volume", self.volume, 0.0, 2.0)
         auto_row = ttk.Frame(edits, style="Card.TFrame")
         auto_row.pack(fill="x", pady=(7, 0))
-        ttk.Checkbutton(auto_row, text="Auto Correct", variable=self.auto_correct).pack(side="left")
-        ttk.Checkbutton(auto_row, text="Auto White Balance", variable=self.auto_white_balance).pack(side="left", padx=8)
+        ttk.Checkbutton(auto_row, text="Auto Correct", variable=self.auto_correct, command=self._adjustment_changed).pack(side="left")
+        ttk.Checkbutton(auto_row, text="Auto White Balance", variable=self.auto_white_balance, command=self._adjustment_changed).pack(side="left", padx=8)
+        full_presets = ttk.Frame(edits, style="Card.TFrame")
+        full_presets.pack(fill="x", pady=(7, 0))
+        ttk.Label(full_presets, text="Adjustment preset", style="Card.TLabel").pack(side="left")
+        preset_picker = ttk.Combobox(
+            full_presets,
+            textvariable=self.adjustment_preset,
+            values=("Neutral", "Dolphin night", "Low-light lift", "Warm sunset", "Bright day"),
+            state="readonly",
+            width=18,
+        )
+        preset_picker.pack(side="right", fill="x", expand=True, padx=(8, 0))
+        preset_picker.bind("<<ComboboxSelected>>", lambda _e: self.apply_adjustment_preset())
         exposure_presets = ttk.Frame(edits, style="Card.TFrame")
         exposure_presets.pack(fill="x", pady=(7, 0))
         ttk.Label(exposure_presets, text="Exposure presets", style="Card.TLabel").pack(side="left")
@@ -186,15 +201,16 @@ class TPSVideoEditor:
         ttk.Button(exposure_presets, text="Bright -", command=lambda: self.set_exposure_preset(-0.20)).pack(side="left", padx=2)
         preset_row = ttk.Frame(edits, style="Card.TFrame")
         preset_row.pack(fill="x", pady=(7, 0))
-        ttk.Button(preset_row, text="Neutral", command=self.neutral).pack(side="left")
-        ttk.Button(preset_row, text="Dolphin warm", command=self.dolphin_preset).pack(side="left", padx=6)
+        ttk.Button(preset_row, text="Reset all", command=lambda: self.apply_adjustment_preset("Neutral")).pack(side="left")
 
         logo = ttk.LabelFrame(right, text="4. TPS logo")
         logo.pack(fill="x")
         logo_controls = ttk.Frame(logo, style="Card.TFrame")
         logo_controls.pack(fill="x")
-        ttk.Checkbutton(logo_controls, text="Add TPS logo — top left", variable=self.logo_enabled).pack(side="left")
-        ttk.Combobox(logo_controls, textvariable=self.logo_size, values=("10%", "15%", "20%"), state="readonly", width=6).pack(side="right")
+        ttk.Checkbutton(logo_controls, text="Add TPS logo — top left", variable=self.logo_enabled, command=self._adjustment_changed).pack(side="left")
+        logo_picker = ttk.Combobox(logo_controls, textvariable=self.logo_size, values=("10%", "15%", "20%"), state="readonly", width=6)
+        logo_picker.pack(side="right")
+        logo_picker.bind("<<ComboboxSelected>>", lambda _e: self._adjustment_changed())
         ttk.Label(logo, text="Defaults to 15% • aspect ratio preserved • fixed drop shadow", style="Card.TLabel", wraplength=340).pack(anchor="w", pady=(4, 0))
 
         self.run_button = ttk.Button(right, text="CREATE EDITED VIDEOS", style="Primary.TButton", command=self.start_processing)
@@ -218,9 +234,18 @@ class TPSVideoEditor:
         value = ttk.Label(row, width=6, style="Card.TLabel")
         value.pack(side="right")
         ttk.Label(row, text=label, width=14, style="Card.TLabel").pack(side="left")
-        scale = ttk.Scale(row, variable=variable, from_=low, to=high, command=lambda x, v=value: v.config(text=f"{float(x):.2f}"))
+        scale = ttk.Scale(row, variable=variable, from_=low, to=high)
         scale.pack(side="left", fill="x", expand=True)
         value.config(text=f"{variable.get():.2f}")
+        variable.trace_add("write", lambda *_args, v=variable, label=value: self._slider_changed(v, label))
+
+    def _slider_changed(self, variable, value_label):
+        value_label.config(text=f"{variable.get():.2f}")
+        self._adjustment_changed()
+
+    def _adjustment_changed(self):
+        if self.preview_refresh is not None:
+            self.preview_refresh()
 
     def show_instructions(self):
         win = Toplevel(self.root)
@@ -271,9 +296,9 @@ Blue balance — Adjusts the blue channel. Default: 1.00.
 Volume — 0 is silent, 1 is original volume, and 2 doubles the level. Default: 1.00.
 Auto Correct — Automatically normalises exposure and tonal range through the full video. Default: OFF.
 Auto White Balance — Applies a conservative colour correction through the full video. It is designed to preserve skin tones and resist sudden yellow/green shifts in night footage. Default: OFF.
-Exposure presets — Dark + strongly lifts a dark video; Lift makes a smaller increase; Normal returns exposure to 0; Bright - reduces an overly bright video.
-Neutral — Restores all manual sliders to their defaults.
-Dolphin warm — Applies the TPS warm dolphin preset: exposure 0.08, contrast 1.05, warmth 0.06, red 1.03, blue 0.97 and volume 1.00.
+Adjustment preset — Sets all visible correction sliders together. Neutral restores the original look; Dolphin night is the recommended safe starting point for dolphin-feed footage; Low-light lift opens dark scenes; Warm sunset enriches portraits; Bright day protects highlights.
+Exposure presets — Dark + strongly lifts a dark video; Lift makes a smaller increase; Normal returns exposure to 0; Bright - reduces an overly bright video. The other sliders remain available for fine tuning.
+Reset all — Restores all correction sliders and automatic options to Neutral.
 
 TPS LOGO
 
@@ -282,7 +307,7 @@ Logo size — Safe choices are 10%, 15% and 20% of video width. Default on every
 
 PREVIEW
 
-Preview selected opens a built-in BEFORE/AFTER comparison. Choose any selected clip and move the timeline; it updates automatically after movement. The AFTER frame uses the same correction and logo settings as export.
+Preview selected opens a built-in BEFORE/AFTER comparison. Keep this viewer open while choosing presets or moving sliders—the AFTER image refreshes automatically after each change and uses the same correction and logo settings as export.
 
 PROGRESS AND SAFETY
 
@@ -371,6 +396,27 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         for var, value in [(self.exposure, 0), (self.contrast, 1), (self.shadows, 0), (self.whites, 0), (self.highlights, 0), (self.warmth, 0), (self.red_balance, 1), (self.blue_balance, 1), (self.volume, 1)]:
             var.set(value)
 
+    def apply_adjustment_preset(self, name=None):
+        name = name or self.adjustment_preset.get()
+        presets = {
+            "Neutral": (False, False, 0.00, 1.00, 0.00, 0.00, 0.00, 0.00, 1.00, 1.00),
+            "Dolphin night": (False, True, 0.08, 1.03, 0.12, -0.05, -0.12, 0.00, 1.00, 1.00),
+            "Low-light lift": (False, True, 0.25, 1.04, 0.22, -0.05, -0.14, 0.00, 1.00, 1.00),
+            "Warm sunset": (False, False, 0.05, 1.06, 0.08, 0.00, -0.10, 0.08, 1.02, 0.98),
+            "Bright day": (False, True, -0.08, 1.04, 0.05, -0.08, -0.22, 0.00, 1.00, 1.00),
+        }
+        auto, white_balance, exposure, contrast, shadows, whites, highlights, warmth, red, blue = presets.get(name, presets["Neutral"])
+        self.adjustment_preset.set(name)
+        self.auto_correct.set(auto)
+        self.auto_white_balance.set(white_balance)
+        for var, value in (
+            (self.exposure, exposure), (self.contrast, contrast), (self.shadows, shadows),
+            (self.whites, whites), (self.highlights, highlights), (self.warmth, warmth),
+            (self.red_balance, red), (self.blue_balance, blue),
+        ):
+            var.set(value)
+        self._adjustment_changed()
+
     def set_exposure_preset(self, value: float):
         self.exposure.set(value)
 
@@ -392,7 +438,13 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         clips = self.selected_clips()
         if not clips:
             return messagebox.showinfo(APP_NAME, "Select a video first.")
+        if self.preview_window is not None and self.preview_window.winfo_exists():
+            self.preview_window.lift()
+            self.preview_window.focus_force()
+            self._adjustment_changed()
+            return
         win = Toplevel(self.root)
+        self.preview_window = win
         win.title("Batch preview — before and after")
         win.geometry("1120x760")
         selected_name = StringVar(value=clips[0].source.name)
@@ -413,14 +465,25 @@ Auto Correct OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shad
         pending = {"job": None, "generation": 0}
 
         def schedule_render(_value=None, immediate=False):
+            if not win.winfo_exists():
+                return
             if pending["job"] is not None:
                 win.after_cancel(pending["job"])
-            delay = 0 if immediate else 350
+            delay = 0 if immediate else 250
             pending["job"] = win.after(delay, render)
+
+        self.preview_refresh = schedule_render
+
+        def close_preview():
+            self.preview_refresh = None
+            self.preview_window = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", close_preview)
 
         slider = ttk.Scale(win, variable=timeline, from_=0, to=100, command=schedule_render)
         slider.pack(fill="x", padx=18)
-        ttk.Label(win, text="Move through the whole video. The BEFORE and AFTER images update automatically using the same corrections and logo as export.").pack(pady=(5, 12))
+        ttk.Label(win, text="Move through the video or adjust any preset, slider, automatic correction or logo control. The AFTER image refreshes live using the export settings.").pack(pady=(5, 12))
 
         def render():
             if not win.winfo_exists():
