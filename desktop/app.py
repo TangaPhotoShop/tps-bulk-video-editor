@@ -19,7 +19,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.14"
+APP_VERSION = "1.3.15"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 
 
@@ -113,6 +113,8 @@ class TPSVideoEditor:
         style.configure("Card.TLabel", background="white")
         style.configure("Title.TLabel", background="#073f49", foreground="white", font=("Segoe UI Semibold", 22))
         style.configure("Primary.TButton", font=("Segoe UI Semibold", 10), padding=(14, 9))
+        style.configure("Cancel.TButton", background="#c62828", foreground="white", font=("Segoe UI Semibold", 10), padding=(14, 9))
+        style.map("Cancel.TButton", background=[("active", "#a91f1f")], foreground=[("active", "white")])
         style.configure("Busy.TLabel", background="#ef7d00", foreground="white", font=("Segoe UI Semibold", 11), padding=(10, 8))
         style.configure("TButton", padding=(10, 7))
         style.configure("TLabelframe", background="white", padding=12)
@@ -261,13 +263,10 @@ class TPSVideoEditor:
         logo_picker.bind("<<ComboboxSelected>>", lambda _e: self._adjustment_changed())
         ttk.Label(logo, text="Defaults to 15% • aspect ratio preserved • fixed drop shadow", style="Card.TLabel", wraplength=340).pack(anchor="w", pady=(4, 0))
 
-        self.run_button = ttk.Button(right, text="CREATE EDITED VIDEOS", style="Primary.TButton", command=self.start_processing)
+        self.run_button = ttk.Button(right, text="CREATE EDITED VIDEOS", style="Primary.TButton", command=self.primary_export_action)
         self.run_button.pack(fill="x", pady=(12, 4))
         self.busy_notice = ttk.Label(right, text="READY TO EXPORT", anchor="center", style="Card.TLabel")
         self.busy_notice.pack(fill="x", pady=(2, 4))
-        self.stop_button = ttk.Button(right, text="STOP EXPORTING", command=self.request_stop)
-        self.stop_button.pack(fill="x", pady=(0, 4))
-        self.stop_button.state(["disabled"])
         self.open_folder_button = ttk.Button(right, text="OPEN OUTPUT FOLDER", command=self.open_output_folder)
         self.open_folder_button.pack(fill="x", pady=(0, 4))
         self.open_folder_button.state(["disabled"])
@@ -373,7 +372,7 @@ The permanent BEFORE/AFTER viewer is part of the main window. Select a video, mo
 
 PROGRESS AND SAFETY
 
-The orange BUSY notice, status column, progress bar and estimated time remaining show the current export. Stop Exporting asks for confirmation, keeps completed videos and removes the incomplete file currently being written. Original SD-card files are never modified or deleted.
+The orange BUSY notice, status column, progress bar and estimated time remaining show the current export. While processing, the main button becomes a red CANCEL BATCH EXPORT button that remains visible. It asks for confirmation, keeps completed videos and removes the incomplete file currently being written. Original SD-card files are never modified or deleted.
 
 STARTUP DEFAULTS — VERSION {APP_VERSION}
 
@@ -606,12 +605,18 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         if not messagebox.askyesno(APP_NAME, "Stop exporting now?\n\nCompleted videos will be kept. The incomplete video currently being created will be removed."):
             return
         self.stop_requested.set()
-        self.stop_button.state(["disabled"])
+        self.run_button.state(["disabled"])
         self.busy_notice.config(text="STOPPING EXPORT SAFELY…", style="Busy.TLabel")
         self.summary.config(text="Stopping after the current FFmpeg process closes…")
         proc = self.active_process
         if proc is not None and proc.poll() is None:
             proc.terminate()
+
+    def primary_export_action(self):
+        if self.processing:
+            self.request_stop()
+        else:
+            self.start_processing()
 
     def open_output_folder(self):
         if self.last_output_folder and Path(self.last_output_folder).exists():
@@ -660,8 +665,8 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         self.last_output_folder = output
         self.open_folder_button.state(["disabled"])
         self.stop_requested.clear()
-        self.run_button.state(["disabled"])
-        self.stop_button.state(["!disabled"])
+        self.run_button.config(text="CANCEL BATCH EXPORT", style="Cancel.TButton")
+        self.run_button.state(["!disabled"])
         self.busy_notice.config(text="BUSY — PREPARING EXPORT…", style="Busy.TLabel")
         self.summary.config(text="Starting video processing…")
         self.overall.configure(value=0)
@@ -858,8 +863,8 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
     def _processing_finished(self, completed, total, folders):
         self.processing = False
         self.export_started_at = None
+        self.run_button.config(text="CREATE EDITED VIDEOS", style="Primary.TButton")
         self.run_button.state(["!disabled"])
-        self.stop_button.state(["disabled"])
         self.open_folder_button.state(["!disabled"])
         self.busy_notice.config(text="EXPORT COMPLETE", style="Card.TLabel")
         self.summary.config(text=f"Finished: {completed} of {total} videos created.")
@@ -868,8 +873,8 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
     def _processing_failed(self, message):
         self.processing = False
         self.export_started_at = None
+        self.run_button.config(text="CREATE EDITED VIDEOS", style="Primary.TButton")
         self.run_button.state(["!disabled"])
-        self.stop_button.state(["disabled"])
         if self.last_output_folder and Path(self.last_output_folder).exists():
             self.open_folder_button.state(["!disabled"])
         self.busy_notice.config(text="EXPORT STOPPED — ERROR", style="Card.TLabel")
@@ -880,8 +885,8 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         self.processing = False
         self.export_started_at = None
         self.active_process = None
+        self.run_button.config(text="CREATE EDITED VIDEOS", style="Primary.TButton")
         self.run_button.state(["!disabled"])
-        self.stop_button.state(["disabled"])
         self.open_folder_button.state(["!disabled"])
         self.busy_notice.config(text="EXPORT STOPPED BY USER", style="Card.TLabel")
         self.summary.config(text=f"Export stopped. {completed} completed video(s) were kept.")
