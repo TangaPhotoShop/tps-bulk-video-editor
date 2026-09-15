@@ -1,5 +1,5 @@
 #define MyAppName "TPS Bulk Video Editor"
-#define MyAppVersion "1.3.12"
+#define MyAppVersion "1.3.13"
 #define MyAppPublisher "Tangalooma Photo Shop"
 #define MyAppExeName "TPS Bulk Video Editor.exe"
 
