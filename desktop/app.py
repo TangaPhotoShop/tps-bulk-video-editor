@@ -17,7 +17,7 @@ from pathlib import Path
 from tkinter import BooleanVar, DoubleVar, StringVar, TclError, Text, Tk, Toplevel, filedialog, messagebox, ttk
 
 import imageio_ffmpeg
-from PIL import Image, ImageTk
+from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
 APP_VERSION = "1.3.16"
@@ -83,6 +83,7 @@ class TPSVideoEditor:
         self.first_filename = StringVar(value=f"{self.job_date.get()}-DOL-[INITIALS]-0001.MP4")
         self.low_res_enabled = BooleanVar(value=False)
         self.low_res_only = BooleanVar(value=False)
+        self.low_res_copyright = BooleanVar(value=True)
         self.low_destination = StringVar(value=r"Z:\7 DAY LOW RES TOUR PHOTOS FOR UPLOAD")
         self.low_resolution = StringVar(value="640x480")
         self.export_quality = DoubleVar(value=85.0)
@@ -242,6 +243,7 @@ class TPSVideoEditor:
         ttk.Checkbutton(low_toggle, text="Also create low-res watermarked copies", variable=self.low_res_enabled, command=self.low_res_option_changed).pack(side="left")
         ttk.Combobox(low_toggle, textvariable=self.low_resolution, values=("640x480", "854x480", "1280x720"), state="readonly", width=10).pack(side="right")
         ttk.Checkbutton(naming, text="Create low-res watermarked videos only — skip full resolution", variable=self.low_res_only, command=self.low_res_option_changed).pack(anchor="w", pady=(1, 2))
+        ttk.Checkbutton(naming, text="Diagonal copyright watermark on low-res videos (50% opacity)", variable=self.low_res_copyright).pack(anchor="w", pady=(1, 2))
         low_row = ttk.Frame(naming, style="Card.TFrame")
         low_row.pack(fill="x", pady=3)
         ttk.Combobox(low_row, textvariable=self.low_destination, values=(r"Z:\7 DAY LOW RES TOUR PHOTOS FOR UPLOAD",), state="normal").pack(side="left", fill="x", expand=True)
@@ -372,6 +374,7 @@ LOW-RESOLUTION COPIES
 
 Also create low-res watermarked copies — Creates a second upload-ready batch with the same filenames.
 Create low-res watermarked videos only — Creates only the upload-ready watermarked batch and skips the full-resolution exports.
+Diagonal copyright watermark — Adds “Copyright Tangalooma Photo Shop” diagonally across low-resolution videos at 50% opacity. Default: ON. It never appears on the full-resolution master.
 Resolution — 640x480, 854x480 or 1280x720. The image is never stretched; padding is added when required.
 Low-res destination — Defaults to Z:\\7 DAY LOW RES TOUR PHOTOS FOR UPLOAD. Select it from the editable list, type an override or use Browse if unavailable. Its generated folder name ends with -LOW-RES.
 Export quality — Controls video compression from 0 to 100 without changing the full-resolution dimensions. Default: 85%. Higher values create larger, cleaner files; 70–100 is recommended. Exact file size depends on the footage.
@@ -414,7 +417,7 @@ The orange BUSY notice shows which video is processing, for example 1 of 10, plu
 
 STARTUP DEFAULTS — VERSION {APP_VERSION}
 
-Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Export quality 85% | Low-resolution copies OFF | Low-resolution only OFF | TPS logo ON | Logo size 15%
+Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Export quality 85% | Low-resolution copies OFF | Low-resolution only OFF | Low-res copyright ON | TPS logo ON | Logo size 15%
 """)
         guide.config(state="disabled")
         ttk.Button(frame, text="Close instructions", command=win.destroy).pack(pady=(10, 0))
@@ -830,8 +833,37 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             "logo_path": self.logo_path.get(),
             "logo_size": self.logo_size.get(),
             "low_resolution": self.low_resolution.get(),
+            "low_res_copyright": self.low_res_copyright.get(),
             "export_quality": self.export_quality.get(),
         }
+
+    @staticmethod
+    def copyright_watermark(width: int, height: int) -> Path:
+        """Create a reusable transparent, diagonal copyright overlay."""
+        target = Path(tempfile.gettempdir()) / f"tps-copyright-{width}x{height}.png"
+        if target.exists():
+            return target
+        canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+        font_size = max(18, round(width * 0.045))
+        font = None
+        for candidate in (r"C:\Windows\Fonts\arialbd.ttf", r"C:\Windows\Fonts\segoeuib.ttf", "DejaVuSans-Bold.ttf"):
+            try:
+                font = ImageFont.truetype(candidate, font_size)
+                break
+            except OSError:
+                continue
+        if font is None:
+            font = ImageFont.load_default()
+        text = "Copyright Tangalooma Photo Shop"
+        probe = ImageDraw.Draw(canvas)
+        box = probe.textbbox((0, 0), text, font=font, stroke_width=2)
+        text_layer = Image.new("RGBA", (box[2] - box[0] + 30, box[3] - box[1] + 30), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(text_layer)
+        draw.text((15 - box[0], 15 - box[1]), text, font=font, fill=(255, 255, 255, 128), stroke_width=2, stroke_fill=(0, 0, 0, 96))
+        rotated = text_layer.rotate(25, expand=True, resample=Image.Resampling.BICUBIC)
+        canvas.alpha_composite(rotated, ((width - rotated.width) // 2, (height - rotated.height) // 2))
+        canvas.save(target)
+        return target
 
     def video_filter(self, settings):
         brightness = max(-1.0, min(1.0, settings["exposure"] / 2.0))
@@ -889,6 +921,7 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
 
     def command(self, source: Path, target: Path, settings, low_res: bool = False):
         base_filter = self.video_filter(settings)
+        width = height = 0
         if low_res:
             width, height = (int(v) for v in settings["low_resolution"].split("x"))
             base_filter += f",scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
@@ -896,27 +929,44 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         if settings["volume"] > 1.0:
             volume += ",alimiter=limit=0.95:attack=5:release=50"
         crf = str(self.quality_crf(settings["export_quality"], low_res))
-        if not settings["logo_enabled"] and not low_res:
+        use_logo = settings["logo_enabled"]
+        use_copyright = low_res and settings.get("low_res_copyright", True)
+        if not use_logo and not use_copyright:
             return [ffmpeg_path(), "-y", "-i", str(source), "-vf", base_filter, "-af", volume, "-c:v", "libx264", "-preset", "fast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target)]
-        frame_width = int(settings["low_resolution"].split("x")[0]) if low_res else self.video_dimensions(source)[0]
-        logo_fraction = int(settings["logo_size"].rstrip("%")) / 100.0
-        logo_width = max(16, round(frame_width * logo_fraction))
-        margin = max(8, round(frame_width * 0.0125))
-        opacity = 0.82 if low_res else 0.92
-        shadow = 0.70
-        graph = (
-            f"[0:v]{base_filter}[base];[1:v]format=rgba,colorchannelmixer=aa={opacity:.3f}[rawlogo];"
-            f"[rawlogo]scale=w={logo_width}:h=-1:force_original_aspect_ratio=decrease,setsar=1[logo];"
-            f"[logo]split[mark][shadowin];[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa={shadow:.3f},boxblur=8[shadow];"
-            f"[base][shadow]overlay={margin + 5}:{margin + 5}[shadowed];[shadowed][mark]overlay={margin}:{margin}[outv]"
-        )
-        return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", settings["logo_path"], "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "fast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
+        inputs = [ffmpeg_path(), "-y", "-i", str(source)]
+        graph = [f"[0:v]{base_filter}[base]"]
+        current = "base"
+        input_index = 1
+        if use_logo:
+            inputs += ["-loop", "1", "-i", settings["logo_path"]]
+            frame_width = width if low_res else self.video_dimensions(source)[0]
+            logo_width = max(16, round(frame_width * int(settings["logo_size"].rstrip("%")) / 100.0))
+            margin = max(8, round(frame_width * 0.0125))
+            opacity = 0.82 if low_res else 0.92
+            graph += [
+                f"[{input_index}:v]format=rgba,colorchannelmixer=aa={opacity:.3f},scale=w={logo_width}:h=-1:force_original_aspect_ratio=decrease,setsar=1[logo]",
+                "[logo]split[mark][shadowin]",
+                "[shadowin]colorchannelmixer=rr=0:gg=0:bb=0:aa=0.700,boxblur=8[shadow]",
+                f"[{current}][shadow]overlay={margin + 5}:{margin + 5}[shadowed]",
+                f"[shadowed][mark]overlay={margin}:{margin}[branded]",
+            ]
+            current = "branded"
+            input_index += 1
+        if use_copyright:
+            inputs += ["-loop", "1", "-i", str(self.copyright_watermark(width, height))]
+            graph.append(f"[{current}][{input_index}:v]overlay=0:0[outv]")
+        else:
+            graph.append(f"[{current}]null[outv]")
+        return inputs + ["-filter_complex", ";".join(graph), "-map", "[outv]", "-map", "0:a?", "-af", volume, "-c:v", "libx264", "-preset", "fast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", str(target)]
 
     def low_res_from_completed_command(self, source: Path, target: Path, settings):
         """Resize an already corrected/logoed export without repeating expensive filters."""
         width, height = (int(v) for v in settings["low_resolution"].split("x"))
         resize = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
         crf = str(self.quality_crf(settings["export_quality"], True))
+        if settings.get("low_res_copyright", True):
+            graph = f"[0:v]{resize}[base];[base][1:v]overlay=0:0[outv]"
+            return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", str(self.copyright_watermark(width, height)), "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", str(target)]
         return [ffmpeg_path(), "-y", "-i", str(source), "-vf", resize, "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)]
 
     def process_batch(self, output: Path | None, low_output: Path | None, settings, selected, output_names):
