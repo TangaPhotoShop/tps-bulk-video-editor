@@ -1,0 +1,55 @@
+name: Build TPS Photo Import Backup Windows
+
+on:
+  push:
+    branches:
+      - photo-import-backup-build-20261008
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Reassemble source package
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem build-source/source.part*.b64 | Sort-Object Name
+          if (-not $parts) { throw "Source chunks not found" }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
+          [IO.File]::WriteAllBytes("source.zip", [Convert]::FromBase64String($b64))
+          New-Item -ItemType Directory -Path photo-import-backup -Force | Out-Null
+          Expand-Archive source.zip -DestinationPath photo-import-backup -Force
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        working-directory: photo-import-backup
+        run: python -m pip install -r requirements.txt
+
+      - name: Build portable EXE
+        working-directory: photo-import-backup
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name "TPS Photo Import & Backup" `
+            --icon "assets\tps_photo_backup.ico" `
+            --add-data "assets;assets" `
+            main.py
+
+      - name: Build Windows installer
+        working-directory: photo-import-backup
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TPS-Photo-Import-Backup-Windows-v1.0.0
+          path: |
+            photo-import-backup/dist/TPS Photo Import & Backup.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.0.0.exe
