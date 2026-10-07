@@ -4,6 +4,8 @@ import ctypes
 import hashlib
 import os
 import queue
+import subprocess
+import time
 import sys
 import threading
 from datetime import date
@@ -124,6 +126,53 @@ def windows_camera_sd_candidates() -> dict[str, str]:
         except Exception:
             continue
     return candidates
+
+def windows_eject_removable_drive(root: str) -> tuple[bool, str]:
+    """Ask Windows Explorer to safely eject a removable volume and verify it disappears."""
+    if os.name != "nt":
+        return False, "Automatic eject is only available on Windows."
+    root = (root or "").strip()
+    if len(root) < 2 or root[1] != ":":
+        return False, "Source is not a Windows drive letter."
+    root = root[:2].upper() + "\\"
+
+    try:
+        dtype = ctypes.windll.kernel32.GetDriveTypeW(ctypes.c_wchar_p(root))
+        if dtype != 2:  # DRIVE_REMOVABLE only
+            return False, "Windows does not identify this source as removable media."
+    except Exception as exc:
+        return False, f"Could not confirm removable media: {exc}"
+
+    drive = root[:2]
+    script = (
+        "$ErrorActionPreference='Stop'; "
+        f"$drive='{drive}'; "
+        "$shell=New-Object -ComObject Shell.Application; "
+        "$item=$shell.Namespace(17).ParseName($drive); "
+        "if($null -eq $item){exit 2}; "
+        "$item.InvokeVerb('Eject'); "
+        "Start-Sleep -Milliseconds 500"
+    )
+    try:
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
+            timeout=10,
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+    except Exception as exc:
+        return False, f"Windows eject command failed: {exc}"
+
+    # Eject is asynchronous. Only report success when the mounted card really disappears.
+    for _ in range(24):
+        if not Path(root).exists():
+            return True, f"{drive} safely ejected"
+        time.sleep(0.2)
+    return False, "Windows did not confirm that the SD card was ejected."
+
 
 def windows_keep_awake(enable: bool) -> None:
     if os.name != "nt":
@@ -981,6 +1030,53 @@ class TPSApp(tk.Tk):
         if ev.stage == "primary_ready":
             self.set_banner("PRIMARY BACKUP READY ✓ — Backup 2 is continuing. Do not clear the SD card yet.", GREEN)
 
+    def reset_import_screen(self, banner_text: str = "Ready — insert an SD card."):
+        """Clear only the per-event/import state; keep Admin, Dropbox and system configuration."""
+        self.thumbnail_generation += 1
+        self.thumbnail_images.clear()
+        self.photos = []
+        self.preview_photo_path = None
+        self.photo_image = None
+
+        if hasattr(self, "source_var"):
+            self.source_var.set("")
+        if hasattr(self, "photo_tree"):
+            self.photo_tree.delete(*self.photo_tree.get_children())
+        if hasattr(self, "photo_summary"):
+            self.photo_summary.configure(text="No card selected")
+        if hasattr(self, "preview_canvas"):
+            self.preview_canvas.delete("all")
+            w = max(1, self.preview_canvas.winfo_width())
+            h = max(1, self.preview_canvas.winfo_height())
+            self.preview_canvas.create_text(
+                w // 2, h // 2,
+                text="Insert an SD card to begin",
+                fill="#9AA7AC",
+                font=("Segoe UI", 10),
+            )
+        if hasattr(self, "preview_name"):
+            self.preview_name.configure(text="")
+
+        self.date_var.set(date.today().isoformat())
+        self.photographer_var.set("")
+        self.initials_var.set("")
+        self.event_var.set("")
+        self.time_var.set("")
+        self.guests_var.set("")
+        self.issue_var.set("No issues")
+        self.notes_var.set("")
+        self.on_issue_change()
+
+        self.range_start.set("")
+        self.range_end.set("")
+        self.progress["value"] = 0
+        self.progress_text.configure(text="")
+        self.folder_preview.configure(text="Folder preview: —")
+        for label in getattr(self, "backup_status_labels", {}).values():
+            label.configure(text="Not checked", fg=MUTED)
+        self.delete_var.set(bool(self.storage.get_setting("delete_after_verified_default", False)))
+        self.set_banner(banner_text, GREEN)
+
     def handle_done(self, manifest: dict, emergency: bool):
         self.set_busy(False)
         if emergency:
@@ -1017,7 +1113,29 @@ class TPSApp(tk.Tk):
                         row["sd_deleted"] = 1
                         row["updated_at"] = __import__("datetime").datetime.now().isoformat()
                         self.storage.upsert_job(row)
-                    messagebox.showinfo("SD card updated", f"{selected_n} imported JPEGs were deleted.\n{excluded_n} excluded file(s) remain on the card.\n\nDropbox can continue uploading from the verified primary backup.", parent=self)
+                    source_root = manifest.get("source_path", self.source_var.get().strip())
+                    ejected, eject_message = windows_eject_removable_drive(source_root)
+                    if ejected:
+                        self.reset_import_screen("SD CARD EJECTED ✓ — ready for the next card.")
+                        messagebox.showinfo(
+                            "Import complete",
+                            f"{selected_n} imported JPEGs were deleted after 2/2 local verification.\n"
+                            f"{excluded_n} excluded file(s) were left untouched.\n\n"
+                            f"{eject_message}.\nThe Import Event screen has been reset and is ready for the next SD card.\n\n"
+                            "Dropbox and Event Log can continue independently in the background.",
+                            parent=self,
+                        )
+                    else:
+                        self.reset_import_screen("IMPORT COMPLETE ✓ — remove the SD card manually when ready.")
+                        messagebox.showwarning(
+                            "Photos deleted — remove SD card manually",
+                            f"{selected_n} imported JPEGs were deleted after 2/2 local verification.\n"
+                            f"{excluded_n} excluded file(s) remain on the card.\n\n"
+                            f"Windows could not automatically eject the card:\n{eject_message}\n\n"
+                            "No further access to the SD card is required. Remove it manually, then insert the next card.\n"
+                            "The Import Event screen has already been reset.",
+                            parent=self,
+                        )
                 except Exception as exc:
                     messagebox.showerror("Could not clear SD card", f"The local backups remain safe, but the source files were NOT fully deleted.\n\n{exc}", parent=self)
                     return
