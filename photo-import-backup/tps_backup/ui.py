@@ -186,6 +186,7 @@ class TPSApp(tk.Tk):
         self.after(300, self.poll_queue)
         self.after(700, lambda: self.monitor_sd_cards(initial=True))
         self.after(1800, self.start_pending_dropbox_sync)
+        self.after(2600, self.auto_sync_eventlog_queue)
 
     def _style(self):
         style = ttk.Style(self)
@@ -259,7 +260,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.1.8\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text="VERSION 1.2.0\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
@@ -873,6 +874,26 @@ class TPSApp(tk.Tk):
                     if hasattr(self, "backup_status_labels"):
                         self.backup_status_labels[3].configure(text="Pending • will retry later", fg=ORANGE)
                     self.refresh_history()
+                elif kind == "eventlog_test":
+                    ok, msg = payload
+                    if hasattr(self, "eventlog_admin_status"):
+                        self.eventlog_admin_status.configure(text=msg, fg=(GREEN if ok else RED))
+                    if not ok and self.current_page == "admin":
+                        messagebox.showerror("Event Log connection", msg, parent=self)
+                elif kind == "eventlog_manual_sync_done":
+                    results = payload
+                    ok_count = sum(1 for _, success, _ in results if success)
+                    failed = len(results) - ok_count
+                    self.refresh_history()
+                    messagebox.showinfo("Event Log sync", f"{ok_count} record(s) sent successfully.\n{failed} remain queued.", parent=self)
+                elif kind == "eventlog_auto_sync_done":
+                    results = payload
+                    if results:
+                        self.refresh_history()
+                        if any(success for _, success, _ in results):
+                            self.set_banner("Event Log queue synced successfully.", GREEN)
+                elif kind == "eventlog_sync_error":
+                    self.refresh_history()
         except queue.Empty:
             pass
         self.after(250, self.poll_queue)
@@ -1194,10 +1215,38 @@ class TPSApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def sync_eventlog_queue(self):
-        results = self.engine.eventlog.sync_all()
-        ok = sum(1 for _, success, _ in results if success)
-        messagebox.showinfo("Event Log sync", f"{ok} queued record(s) sent successfully.\n{len(results)-ok} remain queued/not configured.", parent=self)
-        self.refresh_history()
+        def worker():
+            try:
+                results = self.engine.eventlog.sync_all()
+                self.msg_queue.put(("eventlog_manual_sync_done", results))
+            except Exception as exc:
+                self.msg_queue.put(("eventlog_sync_error", str(exc)))
+        threading.Thread(target=worker, daemon=True, name="TPSEventLogManualSync").start()
+
+    def auto_sync_eventlog_queue(self):
+        def worker():
+            try:
+                results = self.engine.eventlog.sync_all()
+                self.msg_queue.put(("eventlog_auto_sync_done", results))
+            except Exception as exc:
+                self.msg_queue.put(("eventlog_sync_error", str(exc)))
+        threading.Thread(target=worker, daemon=True, name="TPSEventLogAutoSync").start()
+
+    def admin_test_eventlog(self):
+        if hasattr(self, "eventlog_admin_status"):
+            self.eventlog_admin_status.configure(text="Testing…", fg=BLUE)
+
+        def worker():
+            try:
+                ok, msg = self.engine.eventlog.test_connection()
+                self.msg_queue.put(("eventlog_test", (ok, msg)))
+            except Exception as exc:
+                self.msg_queue.put(("eventlog_test", (False, str(exc))))
+        threading.Thread(target=worker, daemon=True, name="TPSEventLogTest").start()
+
+    def refresh_eventlog_admin_status(self):
+        if hasattr(self, "eventlog_admin_status"):
+            self.eventlog_admin_status.configure(text="Connected automatically", fg=GREEN)
 
     # ---------------- Admin ----------------
     def build_admin_page(self):
@@ -1260,28 +1309,23 @@ class TPSApp(tk.Tk):
         syscard = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         syscard.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         syscard.grid_columnconfigure(1, weight=1)
-        tk.Label(syscard, text="EVENT LOG & CARD CLEARING", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(14,4))
+        tk.Label(syscard, text="EVENT LOG & CARD CLEARING", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(14,6))
+        tk.Label(syscard, text="TPS Event Log integration", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=1, column=0, sticky="w", padx=16, pady=7)
+        self.eventlog_admin_status = tk.Label(syscard, text="Checking…", bg=CARD, fg=MUTED, font=("Segoe UI Semibold", 9))
+        self.eventlog_admin_status.grid(row=1, column=1, sticky="w", padx=8, pady=7)
+        ttk.Button(syscard, text="Test Event Log", style="Secondary.TButton", command=self.admin_test_eventlog).grid(row=1, column=2, sticky="e", padx=(8,16), pady=7)
         tk.Label(
             syscard,
-            text="EVENT LOG NOT CONNECTED YET — leave the URL and key blank. Completed event records are safely queued on this computer until the Event Log API is added.",
-            bg="#FFF4E5",
-            fg=ORANGE,
-            font=("Segoe UI Semibold", 8),
-            wraplength=920,
+            text="Completed photo imports are sent automatically to the central Event Log import database. If the connection is unavailable, records stay queued locally and retry later.",
+            bg=CARD,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+            wraplength=900,
             justify="left",
-            anchor="w",
-        ).grid(row=1, column=0, columnspan=2, sticky="ew", padx=16, pady=(2,8))
-        tk.Label(syscard, text="Event Log API URL", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=2, column=0, sticky="w", padx=16, pady=7)
-        self.eventlog_url_var = tk.StringVar()
-        ttk.Entry(syscard, textvariable=self.eventlog_url_var).grid(row=2, column=1, sticky="ew", padx=(8,16), pady=7)
-        tk.Label(syscard, text="This will be the secure import endpoint in TPS Event Log. It does not exist yet, so leave it blank.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=760, justify="left").grid(row=3, column=1, sticky="w", padx=(8,16), pady=(0,7))
-        tk.Label(syscard, text="Event Log API key", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=4, column=0, sticky="w", padx=16, pady=7)
-        self.eventlog_key_var = tk.StringVar()
-        ttk.Entry(syscard, textvariable=self.eventlog_key_var, show="•").grid(row=4, column=1, sticky="ew", padx=(8,16), pady=7)
-        tk.Label(syscard, text="This will be generated by TPS Event Log when its Photo Import API is enabled. It is not a Dropbox key.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=760, justify="left").grid(row=5, column=1, sticky="w", padx=(8,16), pady=(0,7))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", padx=16, pady=(0,10))
         self.admin_delete_default_var = tk.BooleanVar()
-        ttk.Checkbutton(syscard, text="Pre-select 'Delete imported SD files after 2 local backups are verified'", variable=self.admin_delete_default_var).grid(row=6, column=0, columnspan=2, sticky="w", padx=16, pady=(7,4))
-        tk.Label(syscard, text="Even when pre-selected, staff still receive a final confirmation. Dropbox is not required before the SD card can be cleared.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=800, justify="left").grid(row=7, column=0, columnspan=2, sticky="w", padx=16, pady=(0,14))
+        ttk.Checkbutton(syscard, text="Pre-select 'Delete imported SD files after 2 local backups are verified'", variable=self.admin_delete_default_var).grid(row=3, column=0, columnspan=3, sticky="w", padx=16, pady=(7,4))
+        tk.Label(syscard, text="Even when pre-selected, staff still receive a final confirmation. Dropbox and Event Log sync are not required before the SD card can be cleared.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=900, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", padx=16, pady=(0,14))
 
         people = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         people.grid(row=3, column=0, sticky="ew", pady=(0, 12))
@@ -1327,12 +1371,11 @@ class TPSApp(tk.Tk):
     def load_admin_settings(self):
         for key, var in getattr(self, "admin_path_vars", {}).items():
             var.set(self.storage.get_setting(key, ""))
-        if hasattr(self, "eventlog_url_var"):
-            self.eventlog_url_var.set(self.storage.get_setting("eventlog_url", ""))
-            self.eventlog_key_var.set(self.storage.get_setting("eventlog_api_key", ""))
+        if hasattr(self, "admin_delete_default_var"):
             self.admin_delete_default_var.set(bool(self.storage.get_setting("delete_after_verified_default", False)))
             self.dropbox_app_key_var.set(self.storage.get_setting("dropbox_app_key", ""))
             self.refresh_dropbox_admin_status()
+            self.refresh_eventlog_admin_status()
             self.refresh_admin_people()
             self.refresh_admin_events()
 
@@ -1407,8 +1450,6 @@ class TPSApp(tk.Tk):
         for key, var in self.admin_path_vars.items():
             self.storage.set_setting(key, var.get().strip())
         self.storage.set_setting("dropbox_app_key", self.dropbox_app_key_var.get().strip())
-        self.storage.set_setting("eventlog_url", self.eventlog_url_var.get().strip())
-        self.storage.set_setting("eventlog_api_key", self.eventlog_key_var.get().strip())
         self.storage.set_setting("delete_after_verified_default", bool(self.admin_delete_default_var.get()))
         self.delete_var.set(bool(self.admin_delete_default_var.get()))
         self.load_reference_data()
