@@ -157,6 +157,8 @@ class TPSApp(tk.Tk):
         self.photo_image = None
         self.preview_photo_path = None
         self.preview_resize_after = None
+        self.thumbnail_images = {}
+        self.thumbnail_generation = 0
         self.admin_unlocked = False
         self.backup_in_progress = False
         self.known_sd_cards: set[str] = set()
@@ -165,9 +167,17 @@ class TPSApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         ico = resource_path("tps_photo_backup.ico")
+        png_icon = resource_path("tps_photo_backup.png")
         try:
             if ico.exists():
                 self.iconbitmap(str(ico))
+        except Exception:
+            pass
+        try:
+            if Image and ImageTk and png_icon.exists():
+                icon_im = Image.open(png_icon).convert("RGBA")
+                self.window_icon_image = ImageTk.PhotoImage(icon_im)
+                self.iconphoto(True, self.window_icon_image)
         except Exception:
             pass
 
@@ -201,6 +211,7 @@ class TPSApp(tk.Tk):
         style.configure("Danger.TButton", font=("Segoe UI Semibold", 10), padding=(12, 9), foreground="#FFFFFF", background=RED, borderwidth=0)
         style.map("Danger.TButton", background=[("active", "#983737")])
         style.configure("Treeview", background="#FFFFFF", fieldbackground="#FFFFFF", foreground=INK, rowheight=30, bordercolor=LINE, font=("Segoe UI", 9))
+        style.configure("Photo.Treeview", background="#FFFFFF", fieldbackground="#FFFFFF", foreground=INK, rowheight=58, bordercolor=LINE, font=("Segoe UI", 9))
         style.configure("Treeview.Heading", background="#EDE8DE", foreground=INK, font=("Segoe UI Semibold", 9), relief="flat")
         style.map("Treeview", background=[("selected", "#D7E6EA")], foreground=[("selected", INK)])
         style.configure("TCheckbutton", background=CARD, foreground=INK, font=("Segoe UI", 9))
@@ -248,7 +259,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.1.6\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text="VERSION 1.1.7\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
@@ -380,8 +391,16 @@ class TPSApp(tk.Tk):
         tree_wrap.grid(row=3, column=0, sticky="nsew", padx=16, pady=(0, 10))
         tree_wrap.grid_columnconfigure(0, weight=1)
         tree_wrap.grid_rowconfigure(0, weight=1)
-        self.photo_tree = ttk.Treeview(tree_wrap, columns=("include", "original", "number", "size"), show="headings", selectmode="extended")
-        for col, text, width in [("include", "Import", 65), ("original", "Original filename", 200), ("number", "No.", 70), ("size", "Size", 80)]:
+        self.photo_tree = ttk.Treeview(
+            tree_wrap,
+            columns=("include", "original", "number", "size"),
+            show=("tree", "headings"),
+            selectmode="extended",
+            style="Photo.Treeview",
+        )
+        self.photo_tree.heading("#0", text="Preview")
+        self.photo_tree.column("#0", width=68, minwidth=68, stretch=False, anchor="center")
+        for col, text, width in [("include", "Import", 65), ("original", "Original filename", 190), ("number", "No.", 70), ("size", "Size", 80)]:
             self.photo_tree.heading(col, text=text)
             self.photo_tree.column(col, width=width, anchor="center" if col != "original" else "w")
         self.photo_tree.grid(row=0, column=0, sticky="nsew")
@@ -548,7 +567,10 @@ class TPSApp(tk.Tk):
         try:
             photos = discover_photos(src)
             self.photos: list[SourcePhoto] = photos
+            self.thumbnail_generation += 1
+            self.thumbnail_images.clear()
             self.rebuild_photo_tree()
+            self.start_thumbnail_generation()
             if photos:
                 self.set_banner(f"{len(photos)} JPEGs found. Review selections before backup.", GREEN)
             else:
@@ -560,8 +582,63 @@ class TPSApp(tk.Tk):
     def rebuild_photo_tree(self):
         self.photo_tree.delete(*self.photo_tree.get_children())
         for i, photo in enumerate(getattr(self, "photos", [])):
-            self.photo_tree.insert("", "end", iid=str(i), values=("✓" if photo.selected else "—", photo.original_name, photo.number or "?", human_bytes(photo.size)))
+            thumb = self.thumbnail_images.get(photo.path, "")
+            self.photo_tree.insert(
+                "",
+                "end",
+                iid=str(i),
+                image=thumb,
+                text="",
+                values=("✓" if photo.selected else "—", photo.original_name, photo.number or "?", human_bytes(photo.size)),
+            )
         self.update_photo_summary()
+
+    def start_thumbnail_generation(self):
+        if not Image or not ImageTk:
+            return
+        generation = self.thumbnail_generation
+        photos = list(getattr(self, "photos", []))
+        missing = [(i, p.path) for i, p in enumerate(photos) if p.path not in self.thumbnail_images]
+        if not missing:
+            return
+
+        def worker():
+            for idx, path in missing:
+                if generation != self.thumbnail_generation:
+                    return
+                try:
+                    with Image.open(path) as source:
+                        try:
+                            source.draft("RGB", (112, 112))
+                        except Exception:
+                            pass
+                        oriented = ImageOps.exif_transpose(source) if ImageOps else source.copy()
+                        thumb = oriented.convert("RGB")
+                        thumb.thumbnail((54, 44), Image.Resampling.LANCZOS)
+                    tile = Image.new("RGB", (56, 46), "#1C252A")
+                    x = (56 - thumb.width) // 2
+                    y = (46 - thumb.height) // 2
+                    tile.paste(thumb, (x, y))
+                    self.msg_queue.put(("thumbnail_ready", (generation, idx, path, tile)))
+                except Exception:
+                    self.msg_queue.put(("thumbnail_ready", (generation, idx, path, None)))
+
+        threading.Thread(target=worker, daemon=True, name="TPSPhotoThumbnails").start()
+
+    def apply_thumbnail(self, payload):
+        generation, idx, path, pil_image = payload
+        if generation != self.thumbnail_generation:
+            return
+        if not pil_image or not ImageTk:
+            return
+        try:
+            tk_image = ImageTk.PhotoImage(pil_image)
+            self.thumbnail_images[path] = tk_image
+            iid = str(idx)
+            if self.photo_tree.exists(iid):
+                self.photo_tree.item(iid, image=tk_image)
+        except Exception:
+            pass
 
     def update_photo_summary(self):
         photos = getattr(self, "photos", [])
@@ -758,7 +835,9 @@ class TPSApp(tk.Tk):
         try:
             while True:
                 kind, payload = self.msg_queue.get_nowait()
-                if kind == "progress":
+                if kind == "thumbnail_ready":
+                    self.apply_thumbnail(payload)
+                elif kind == "progress":
                     self.handle_progress(payload)
                 elif kind == "done":
                     self.handle_done(*payload)
