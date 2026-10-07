@@ -27,12 +27,17 @@ MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_SETTINGS: dict[str, Any] = {
     "backup1_path": "",
     "backup2_path": "",
-    "backup3_path": "",
     "emergency_path": str(Path.home() / "TPS Emergency Photo Backup"),
     "eventlog_url": "",
     "eventlog_api_key": "",
     "eventlog_enabled": True,
-    "secondary_copy_mode": "auto",  # auto | sequential | parallel
+    "dropbox_app_key": "",
+    "dropbox_refresh_token": "",
+    "dropbox_account_name": "",
+    "dropbox_account_email": "",
+    "dropbox_root_namespace_id": "",
+    "dropbox_destination": "/TPS/TOUR PHOTO BACKUPS/From TEMP CLOUD FOLDER",
+    "dropbox_enabled": True,
     "delete_after_verified_default": False,
     "photographers": [
         {"name": "Steve", "initials": "SW"},
