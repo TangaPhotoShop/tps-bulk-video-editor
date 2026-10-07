@@ -12,10 +12,11 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 try:
-    from PIL import Image, ImageTk
+    from PIL import Image, ImageTk, ImageOps
 except Exception:  # pragma: no cover
     Image = None
     ImageTk = None
+    ImageOps = None
 
 from .backup_engine import (
     BackupEngine,
@@ -105,6 +106,8 @@ class TPSApp(tk.Tk):
         self.msg_queue: queue.Queue = queue.Queue()
         self.current_page = "import"
         self.photo_image = None
+        self.preview_photo_path = None
+        self.preview_resize_after = None
         self.admin_unlocked = False
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
@@ -192,7 +195,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.1.2\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text="VERSION 1.1.3\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
@@ -355,8 +358,10 @@ class TPSApp(tk.Tk):
         preview.grid_columnconfigure(0, weight=1)
         preview.grid_rowconfigure(1, weight=1)
         tk.Label(preview, text="PREVIEW", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
-        self.preview_label = tk.Label(preview, text="Select a photo to preview", bg="#EDE8DE", fg=MUTED, font=("Segoe UI", 10))
-        self.preview_label.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 10))
+        self.preview_canvas = tk.Canvas(preview, bg="#1C252A", highlightthickness=0)
+        self.preview_canvas.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 10))
+        self.preview_canvas.bind("<Configure>", self._on_preview_resize)
+        self.preview_canvas.create_text(10, 10, anchor="nw", text="Select a photo to preview", fill="#9AA7AC", font=("Segoe UI", 10))
         self.preview_name = tk.Label(preview, text="", bg=CARD, fg=MUTED, font=("Segoe UI", 8))
         self.preview_name.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 12))
 
@@ -535,17 +540,44 @@ class TPSApp(tk.Tk):
         if not selected:
             return
         p = self.photos[int(selected[0])]
+        self.preview_photo_path = p.path
         self.preview_name.configure(text=f"{p.original_name}  •  {human_bytes(p.size)}  •  {'Included' if p.selected else 'Excluded'}")
-        if not Image or not ImageTk:
-            self.preview_label.configure(image="", text="Preview requires Pillow")
+        self._render_preview()
+
+    def _on_preview_resize(self, event=None):
+        if self.preview_resize_after:
+            try:
+                self.after_cancel(self.preview_resize_after)
+            except Exception:
+                pass
+        self.preview_resize_after = self.after(80, self._render_preview)
+
+    def _render_preview(self):
+        if not hasattr(self, "preview_canvas"):
             return
+        canvas = self.preview_canvas
+        canvas.delete("all")
+        width = max(1, canvas.winfo_width())
+        height = max(1, canvas.winfo_height())
+
+        if not self.preview_photo_path:
+            canvas.create_text(width // 2, height // 2, text="Select a photo to preview", fill="#9AA7AC", font=("Segoe UI", 10))
+            return
+        if not Image or not ImageTk:
+            canvas.create_text(width // 2, height // 2, text="Preview requires Pillow", fill="#9AA7AC", font=("Segoe UI", 10))
+            return
+
         try:
-            im = Image.open(p.path)
-            im.thumbnail((480, 310))
-            self.photo_image = ImageTk.PhotoImage(im.copy())
-            self.preview_label.configure(image=self.photo_image, text="", bg="#1C252A")
+            with Image.open(self.preview_photo_path) as source:
+                oriented = ImageOps.exif_transpose(source) if ImageOps else source.copy()
+                im = oriented.copy()
+            max_width = max(32, width - 8)
+            max_height = max(32, height - 8)
+            im.thumbnail((max_width, max_height), Image.Resampling.LANCZOS)
+            self.photo_image = ImageTk.PhotoImage(im)
+            canvas.create_image(width // 2, height // 2, image=self.photo_image, anchor="center")
         except Exception:
-            self.preview_label.configure(image="", text="Preview unavailable", bg="#EDE8DE")
+            canvas.create_text(width // 2, height // 2, text="Preview unavailable", fill="#9AA7AC", font=("Segoe UI", 10))
 
     def selected_bytes(self) -> int:
         return sum(p.size for p in getattr(self, "photos", []) if p.selected)
