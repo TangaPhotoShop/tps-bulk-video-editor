@@ -9,7 +9,7 @@ from typing import Any
 from .storage import Storage
 
 DEFAULT_EVENTLOG_ENDPOINT = "https://tps-event-log-import-api-production.up.railway.app/api/photo-import"
-DEFAULT_EVENTLOG_HEALTH = "https://tps-event-log-import-api-production.up.railway.app/health"
+DEFAULT_EVENTLOG_HEALTH = "https://tps-event-log-import-api-production.up.railway.app/health"\nDEFAULT_EVENTLOG_AUTH_TEST = "https://tps-event-log-import-api-production.up.railway.app/api/auth-test"
 DEFAULT_EVENTLOG_IMPORT_KEY = "gkq-yDOoj8rao_HLsN4cPovcMBJXKb5aRpM-l8s5eSc"
 
 
@@ -41,9 +41,12 @@ class EventLogClient:
     def test_connection(self) -> tuple[bool, str]:
         try:
             req = urllib.request.Request(
-                DEFAULT_EVENTLOG_HEALTH,
+                DEFAULT_EVENTLOG_AUTH_TEST,
                 method="GET",
-                headers={"User-Agent": "TPS-Photo-Import/1.2"},
+                headers={
+                    "User-Agent": "TPS-Photo-Import/1.2",
+                    "X-TPS-Import-Key": self.api_key(),
+                },
             )
             with urllib.request.urlopen(req, timeout=8) as response:
                 raw = response.read().decode("utf-8", errors="replace")
@@ -54,8 +57,12 @@ class EventLogClient:
                         suffix = f" • {count} imported record(s)" if isinstance(count, int) else ""
                     except Exception:
                         suffix = ""
-                    return True, f"Connected to TPS Event Log Import API{suffix}"
+                    return True, f"Connected and authorised{suffix}"
                 return False, f"Event Log API returned HTTP {response.status}"
+        except urllib.error.HTTPError as exc:
+            if exc.code == 401:
+                return False, "Event Log API key was rejected"
+            return False, f"Event Log API returned HTTP {exc.code}"
         except Exception as exc:
             return False, str(exc)
 
