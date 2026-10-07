@@ -24,6 +24,10 @@ def packaged_self_test() -> int:
             "apply_thumbnail",
             "auto_sync_eventlog_queue",
             "admin_test_eventlog",
+            "confirm_backup_details",
+            "auto_check_connections_on_load",
+            "apply_startup_connection_results",
+            "reset_import_screen",
         ]
         missing = [name for name in required if not hasattr(TPSApp, name)]
         if missing:
