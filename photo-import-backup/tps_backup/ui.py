@@ -63,6 +63,7 @@ def resource_path(name: str) -> Path:
 
 
 def windows_removable_drives() -> list[str]:
+    """Return only Windows DRIVE_REMOVABLE volumes; never mapped/network/fixed disks."""
     if os.name != "nt":
         return []
     drives = []
@@ -74,6 +75,54 @@ def windows_removable_drives() -> list[str]:
             if dtype == 2:  # DRIVE_REMOVABLE
                 drives.append(root)
     return drives
+
+
+def windows_volume_serial(root: str) -> str:
+    """Stable-enough card identity so a different SD card using the same drive letter is detected."""
+    if os.name != "nt":
+        return root
+    serial = ctypes.c_uint32()
+    max_component = ctypes.c_uint32()
+    flags = ctypes.c_uint32()
+    volume_name = ctypes.create_unicode_buffer(261)
+    filesystem_name = ctypes.create_unicode_buffer(261)
+    try:
+        ok = ctypes.windll.kernel32.GetVolumeInformationW(
+            ctypes.c_wchar_p(root),
+            volume_name,
+            len(volume_name),
+            ctypes.byref(serial),
+            ctypes.byref(max_component),
+            ctypes.byref(flags),
+            filesystem_name,
+            len(filesystem_name),
+        )
+        if ok:
+            return f"{root}|{serial.value:08X}"
+    except Exception:
+        pass
+    return root
+
+
+def windows_camera_sd_candidates() -> dict[str, str]:
+    """Conservative camera-card detection: removable + DCIM + at least one JPEG under DCIM."""
+    candidates: dict[str, str] = {}
+    for root in windows_removable_drives():
+        try:
+            dcim = Path(root) / "DCIM"
+            if not dcim.is_dir():
+                continue
+            has_jpeg = False
+            for p in dcim.rglob("*"):
+                if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg"}:
+                    has_jpeg = True
+                    break
+            if not has_jpeg:
+                continue
+            candidates[windows_volume_serial(root)] = root
+        except Exception:
+            continue
+    return candidates
 
 def windows_keep_awake(enable: bool) -> None:
     if os.name != "nt":
@@ -109,6 +158,8 @@ class TPSApp(tk.Tk):
         self.preview_photo_path = None
         self.preview_resize_after = None
         self.admin_unlocked = False
+        self.backup_in_progress = False
+        self.known_sd_cards: set[str] = set()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         ico = resource_path("tps_photo_backup.ico")
@@ -121,7 +172,7 @@ class TPSApp(tk.Tk):
         self._style()
         self._layout()
         self.after(300, self.poll_queue)
-        self.after(700, self.auto_detect_source)
+        self.after(700, lambda: self.monitor_sd_cards(initial=True))
         self.after(1800, self.start_pending_dropbox_sync)
 
     def _style(self):
@@ -195,7 +246,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.1.4\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text="VERSION 1.1.5\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
@@ -452,13 +503,34 @@ class TPSApp(tk.Tk):
                 return e
         return {"name": name, "code": "OTHER", "times": [], "guests_required": False}
 
-    def auto_detect_source(self):
-        drives = windows_removable_drives()
-        if len(drives) == 1 and not self.source_var.get():
-            self.source_var.set(drives[0])
-            self.scan_source()
-        elif len(drives) > 1 and not self.source_var.get():
-            self.set_banner("Multiple removable drives detected — choose the SD card source.", ORANGE)
+    def monitor_sd_cards(self, initial: bool = False):
+        """Watch for genuine camera-card candidates without ever considering network/fixed drives."""
+        try:
+            candidates = windows_camera_sd_candidates()
+            current_ids = set(candidates.keys())
+
+            if initial:
+                new_ids = current_ids
+            else:
+                new_ids = current_ids - self.known_sd_cards
+
+            self.known_sd_cards = current_ids
+
+            if not self.backup_in_progress and new_ids:
+                roots = [candidates[i] for i in new_ids if i in candidates]
+                if len(roots) == 1:
+                    root = roots[0]
+                    self.source_var.set(root)
+                    self.scan_source()
+                    if getattr(self, "photos", None):
+                        self.set_banner(f"SD card detected automatically on {root} — {len(self.photos)} JPEGs found.", GREEN)
+                elif len(roots) > 1:
+                    self.set_banner("Multiple new camera SD cards detected — choose the source card manually.", ORANGE)
+        except Exception:
+            # Auto-detection must never interfere with manual import or backups.
+            pass
+        finally:
+            self.after(1200, self.monitor_sd_cards)
 
     def browse_source(self):
         p = filedialog.askdirectory(title="Select SD card or source folder", parent=self)
@@ -672,6 +744,7 @@ class TPSApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     def set_busy(self, busy: bool):
+        self.backup_in_progress = busy
         if busy:
             self.backup_btn.state(["disabled"])
             self.emergency_btn.state(["disabled"])
