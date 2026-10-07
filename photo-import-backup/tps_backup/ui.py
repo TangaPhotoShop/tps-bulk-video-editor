@@ -160,6 +160,8 @@ class TPSApp(tk.Tk):
         self.admin_unlocked = False
         self.backup_in_progress = False
         self.known_sd_cards: set[str] = set()
+        self.history_sort_column = "date"
+        self.history_sort_reverse = True
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         ico = resource_path("tps_photo_backup.ico")
@@ -246,7 +248,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.1.5\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text="VERSION 1.1.6\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
@@ -859,40 +861,224 @@ class TPSApp(tk.Tk):
         page = self.pages["history"]
         page.grid_columnconfigure(0, weight=1)
         page.grid_rowconfigure(1, weight=1)
+
         head = tk.Frame(page, bg=BG)
         head.grid(row=0, column=0, sticky="ew", padx=34, pady=(25, 14))
         ttk.Label(head, text="Backup History", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(head, text="Verified local backups, Dropbox upload status, emergency jobs and Event Log sync status.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
+        ttk.Label(
+            head,
+            text="Filter and sort verified local backups, Dropbox uploads, emergency jobs and Event Log sync status.",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(3, 0))
 
         card = tk.Frame(page, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         card.grid(row=1, column=0, sticky="nsew", padx=34, pady=(0, 24))
         card.grid_columnconfigure(0, weight=1)
-        card.grid_rowconfigure(1, weight=1)
-        bar = tk.Frame(card, bg=CARD)
-        bar.grid(row=0, column=0, sticky="ew", padx=16, pady=14)
-        ttk.Button(bar, text="Refresh", style="Secondary.TButton", command=self.refresh_history).pack(side="left")
-        ttk.Button(bar, text="Complete selected emergency backup", style="Primary.TButton", command=self.complete_selected_emergency).pack(side="left", padx=8)
-        ttk.Button(bar, text="Sync Event Log queue", style="Secondary.TButton", command=self.sync_eventlog_queue).pack(side="left")
+        card.grid_rowconfigure(2, weight=1)
+
+        actions = tk.Frame(card, bg=CARD)
+        actions.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 8))
+        ttk.Button(actions, text="Refresh", style="Secondary.TButton", command=self.refresh_history).pack(side="left")
+        ttk.Button(
+            actions,
+            text="Complete selected emergency backup",
+            style="Primary.TButton",
+            command=self.complete_selected_emergency,
+        ).pack(side="left", padx=8)
+        ttk.Button(actions, text="Sync Event Log queue", style="Secondary.TButton", command=self.sync_eventlog_queue).pack(side="left")
+
+        filters = tk.Frame(card, bg="#F6F8F8", highlightbackground=LINE, highlightthickness=1)
+        filters.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
+        filters.grid_columnconfigure(7, weight=1)
+
+        tk.Label(filters, text="Event", bg="#F6F8F8", fg=MUTED, font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w", padx=(12, 4), pady=(8, 2))
+        self.history_event_filter = tk.StringVar(value="All events")
+        self.history_event_combo = ttk.Combobox(filters, textvariable=self.history_event_filter, state="readonly", width=18)
+        self.history_event_combo.grid(row=1, column=0, sticky="ew", padx=(12, 8), pady=(0, 9))
+        self.history_event_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_history())
+
+        tk.Label(filters, text="Photographer", bg="#F6F8F8", fg=MUTED, font=("Segoe UI", 8)).grid(row=0, column=1, sticky="w", padx=4, pady=(8, 2))
+        self.history_photographer_filter = tk.StringVar(value="All photographers")
+        self.history_photographer_combo = ttk.Combobox(filters, textvariable=self.history_photographer_filter, state="readonly", width=18)
+        self.history_photographer_combo.grid(row=1, column=1, sticky="ew", padx=4, pady=(0, 9))
+        self.history_photographer_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_history())
+
+        tk.Label(filters, text="Backup status", bg="#F6F8F8", fg=MUTED, font=("Segoe UI", 8)).grid(row=0, column=2, sticky="w", padx=4, pady=(8, 2))
+        self.history_status_filter = tk.StringVar(value="All statuses")
+        self.history_status_combo = ttk.Combobox(
+            filters,
+            textvariable=self.history_status_filter,
+            state="readonly",
+            width=20,
+            values=[
+                "All statuses",
+                "2/2 local verified",
+                "Dropbox verified",
+                "Dropbox pending",
+                "Emergency backup",
+                "Interrupted / failed",
+            ],
+        )
+        self.history_status_combo.grid(row=1, column=2, sticky="ew", padx=4, pady=(0, 9))
+        self.history_status_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh_history())
+
+        tk.Label(filters, text="Search", bg="#F6F8F8", fg=MUTED, font=("Segoe UI", 8)).grid(row=0, column=3, sticky="w", padx=4, pady=(8, 2))
+        self.history_search_var = tk.StringVar()
+        history_search = ttk.Entry(filters, textvariable=self.history_search_var, width=24)
+        history_search.grid(row=1, column=3, sticky="ew", padx=4, pady=(0, 9))
+        self.history_search_var.trace_add("write", lambda *_: self.refresh_history())
+
+        ttk.Button(filters, text="Clear filters", style="Secondary.TButton", command=self.clear_history_filters).grid(
+            row=1, column=4, sticky="w", padx=(8, 4), pady=(0, 9)
+        )
+        self.history_result_label = tk.Label(filters, text="", bg="#F6F8F8", fg=MUTED, font=("Segoe UI Semibold", 8))
+        self.history_result_label.grid(row=1, column=7, sticky="e", padx=(8, 12), pady=(0, 9))
 
         cols = ("date", "event", "photographer", "photos", "status", "dropbox", "eventlog", "sd")
         self.history_tree = ttk.Treeview(card, columns=cols, show="headings")
-        headings = {
-            "date": ("Date / time", 150), "event": ("Event", 180), "photographer": ("Photographer", 150),
-            "photos": ("Photos", 80), "status": ("Local backup", 190), "dropbox": ("Dropbox", 125), "eventlog": ("Event Log", 120), "sd": ("SD cleared", 90)
+        self.history_headings = {
+            "date": ("Date / time", 150),
+            "event": ("Event", 180),
+            "photographer": ("Photographer", 150),
+            "photos": ("Photos", 80),
+            "status": ("Local backup", 190),
+            "dropbox": ("Dropbox", 125),
+            "eventlog": ("Event Log", 120),
+            "sd": ("SD cleared", 90),
         }
         for c in cols:
-            text, width = headings[c]
-            self.history_tree.heading(c, text=text)
+            label, width = self.history_headings[c]
+            self.history_tree.heading(c, text=label, command=lambda col=c: self.sort_history_by(col))
             self.history_tree.column(c, width=width, anchor="w")
-        self.history_tree.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        self.history_tree.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
+
+        self.refresh_history()
+
+    def _history_status_matches(self, row: dict, selected: str) -> bool:
+        if selected == "All statuses":
+            return True
+        local_ok = row.get("primary_status") == "verified" and row.get("backup2_status") == "verified"
+        dropbox_ok = row.get("backup3_status") == "verified"
+        status_text = str(row.get("status", "")).lower()
+        if selected == "2/2 local verified":
+            return local_ok
+        if selected == "Dropbox verified":
+            return dropbox_ok
+        if selected == "Dropbox pending":
+            return local_ok and not dropbox_ok
+        if selected == "Emergency backup":
+            return row.get("emergency_status") == "verified" or "emergency" in status_text
+        if selected == "Interrupted / failed":
+            return "interrupt" in status_text or "fail" in status_text or bool(row.get("error_message"))
+        return True
+
+    def clear_history_filters(self):
+        if hasattr(self, "history_event_filter"):
+            self.history_event_filter.set("All events")
+            self.history_photographer_filter.set("All photographers")
+            self.history_status_filter.set("All statuses")
+            self.history_search_var.set("")
+        self.refresh_history()
+
+    def sort_history_by(self, column: str):
+        if self.history_sort_column == column:
+            self.history_sort_reverse = not self.history_sort_reverse
+        else:
+            self.history_sort_column = column
+            self.history_sort_reverse = column == "date"
+        self.refresh_history()
+
+    def _history_sort_value(self, row: dict):
+        col = self.history_sort_column
+        if col == "date":
+            return str(row.get("created_at", ""))
+        if col == "event":
+            return (str(row.get("event_name", "")).lower(), str(row.get("event_time", "")))
+        if col == "photographer":
+            return str(row.get("photographer", "")).lower()
+        if col == "photos":
+            return int(row.get("selected_count") or 0)
+        if col == "status":
+            return str(row.get("status", "")).lower()
+        if col == "dropbox":
+            return str(row.get("backup3_status", "")).lower()
+        if col == "eventlog":
+            return str(row.get("eventlog_status", "")).lower()
+        if col == "sd":
+            return int(row.get("sd_deleted") or 0)
+        return str(row.get("created_at", ""))
 
     def refresh_history(self):
         if not hasattr(self, "history_tree"):
             return
+
+        rows = self.storage.list_jobs()
+
+        event_names = sorted({str(r.get("event_name", "")) for r in rows if r.get("event_name")})
+        photographer_names = sorted({str(r.get("photographer", "")) for r in rows if r.get("photographer")})
+
+        if hasattr(self, "history_event_combo"):
+            self.history_event_combo["values"] = ["All events"] + event_names
+            if self.history_event_filter.get() not in self.history_event_combo["values"]:
+                self.history_event_filter.set("All events")
+        if hasattr(self, "history_photographer_combo"):
+            self.history_photographer_combo["values"] = ["All photographers"] + photographer_names
+            if self.history_photographer_filter.get() not in self.history_photographer_combo["values"]:
+                self.history_photographer_filter.set("All photographers")
+
+        event_filter = self.history_event_filter.get() if hasattr(self, "history_event_filter") else "All events"
+        photographer_filter = self.history_photographer_filter.get() if hasattr(self, "history_photographer_filter") else "All photographers"
+        status_filter = self.history_status_filter.get() if hasattr(self, "history_status_filter") else "All statuses"
+        search = self.history_search_var.get().strip().lower() if hasattr(self, "history_search_var") else ""
+
+        filtered = []
+        for row in rows:
+            if event_filter != "All events" and row.get("event_name") != event_filter:
+                continue
+            if photographer_filter != "All photographers" and row.get("photographer") != photographer_filter:
+                continue
+            if not self._history_status_matches(row, status_filter):
+                continue
+            if search:
+                haystack = " ".join(
+                    str(row.get(k, ""))
+                    for k in ("created_at", "event_name", "event_code", "event_time", "photographer", "initials", "folder_name", "notes", "status")
+                ).lower()
+                if search not in haystack:
+                    continue
+            filtered.append(row)
+
+        filtered.sort(key=self._history_sort_value, reverse=self.history_sort_reverse)
+
         self.history_tree.delete(*self.history_tree.get_children())
-        for row in self.storage.list_jobs():
-            status = row["status"].replace("_", " ").title()
-            self.history_tree.insert("", "end", iid=row["id"], values=(row["created_at"][:16].replace("T", " "), f"{row['event_name']} {row['event_time']}", row["photographer"], row["selected_count"], status, row["backup3_status"].replace("_", " ").title(), row["eventlog_status"], "Yes" if row["sd_deleted"] else "No"))
+        for row in filtered:
+            status = str(row["status"]).replace("_", " ").title()
+            dropbox = str(row["backup3_status"]).replace("_", " ").title()
+            self.history_tree.insert(
+                "",
+                "end",
+                iid=row["id"],
+                values=(
+                    row["created_at"][:16].replace("T", " "),
+                    f"{row['event_name']} {row['event_time']}",
+                    row["photographer"],
+                    row["selected_count"],
+                    status,
+                    dropbox,
+                    row["eventlog_status"],
+                    "Yes" if row["sd_deleted"] else "No",
+                ),
+            )
+
+        if hasattr(self, "history_result_label"):
+            self.history_result_label.configure(text=f"{len(filtered)} of {len(rows)} records")
+
+        if hasattr(self, "history_headings"):
+            for col, (label, _) in self.history_headings.items():
+                arrow = ""
+                if col == self.history_sort_column:
+                    arrow = " ▼" if self.history_sort_reverse else " ▲"
+                self.history_tree.heading(col, text=label + arrow, command=lambda c=col: self.sort_history_by(c))
 
     def complete_selected_emergency(self):
         sel = self.history_tree.selection()
