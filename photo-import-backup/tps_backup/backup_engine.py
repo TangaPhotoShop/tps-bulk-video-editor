@@ -17,6 +17,7 @@ from typing import Callable, Iterable, Any
 
 from .storage import Storage
 from .eventlog import EventLogClient
+from .dropbox_client import DROPBOX_DESTINATION
 
 CHUNK_SIZE = 8 * 1024 * 1024
 JPEG_SUFFIXES = {".jpg", ".jpeg"}
@@ -183,14 +184,14 @@ class BackupEngine:
             return False, f"Unavailable: {exc}", 0
 
     def preflight_all(self, required_bytes: int) -> dict[str, tuple[bool, str, int]]:
+        """Preflight the two required local/filesystem backups. Dropbox never blocks card safety."""
         raw = {
             "backup1": self.storage.get_setting("backup1_path", ""),
             "backup2": self.storage.get_setting("backup2_path", ""),
-            "backup3": self.storage.get_setting("backup3_path", ""),
         }
         results = {k: self.preflight_path(v, required_bytes) for k, v in raw.items()}
-        # If multiple configured folders are on the same visible volume/share, ensure the
-        # shared free space can hold all copies, not just one copy independently.
+        # If both configured folders are on the same visible volume/share, ensure the
+        # shared free space can hold both copies. Separate physical storage is still recommended.
         groups: dict[str, list[str]] = {}
         for key, value in raw.items():
             if value:
@@ -397,7 +398,7 @@ class BackupEngine:
             "status": m["status"],
             "primary_status": m["backups"]["backup1"]["status"],
             "backup2_status": m["backups"]["backup2"]["status"],
-            "backup3_status": m["backups"]["backup3"]["status"],
+            "backup3_status": m["backups"].get("dropbox", m["backups"].get("backup3", {"status": "pending"}))["status"],
             "emergency_status": m["backups"]["emergency"]["status"],
             "eventlog_status": m.get("eventlog_status", "queued"),
             "sd_deleted": 1 if m.get("sd_deleted") else 0,
@@ -410,6 +411,11 @@ class BackupEngine:
             cb(ProgressEvent(**kwargs))
 
     def run_normal(self, spec: BackupJobSpec, progress: Callable[[ProgressEvent], None] | None = None) -> dict[str, Any]:
+        """Create two independently verified filesystem copies, then release the SD card.
+
+        Dropbox is intentionally asynchronous and is uploaded later from verified Backup 1,
+        so cloud speed or internet availability never holds the photographer or SD card.
+        """
         self.reset_cancel()
         folder_name, photos = self._build_names(spec)
         selected = [p for p in photos if p.selected]
@@ -420,18 +426,18 @@ class BackupEngine:
         unavailable = [k for k, v in checks.items() if not v[0]]
         if unavailable:
             details = "; ".join(f"{k}: {checks[k][1]}" for k in unavailable)
-            raise BackupError(f"Network backup location unavailable. {details}")
+            raise BackupError(f"Required backup location unavailable. {details}")
 
         b1 = Path(self.storage.get_setting("backup1_path")) / folder_name
         b2 = Path(self.storage.get_setting("backup2_path")) / folder_name
-        b3 = Path(self.storage.get_setting("backup3_path")) / folder_name
-        for d in (b1, b2, b3):
+        for d in (b1, b2):
             d.mkdir(parents=True, exist_ok=True)
 
         job_id = self._make_job_id(spec)
         created = datetime.now().isoformat()
+        dropbox_status = "pending" if (self.storage.get_setting("dropbox_app_key", "") and self.storage.get_setting("dropbox_refresh_token", "")) else "not_connected"
         manifest: dict[str, Any] = {
-            "schema": 1,
+            "schema": 2,
             "job_id": job_id,
             "created_at": created,
             "source_path": spec.source_path,
@@ -452,7 +458,7 @@ class BackupEngine:
             "backups": {
                 "backup1": {"path": str(b1), "status": "pending"},
                 "backup2": {"path": str(b2), "status": "pending"},
-                "backup3": {"path": str(b3), "status": "pending"},
+                "dropbox": {"path": f"{DROPBOX_DESTINATION}/{folder_name}", "status": dropbox_status, "uploaded": []},
                 "emergency": {"path": "", "status": "not_used"},
             },
             "status": "running",
@@ -463,28 +469,24 @@ class BackupEngine:
         self.storage.upsert_job(self._job_row(manifest, manifest_path))
 
         bytes_done = 0
-        start = time.monotonic()
+        start_time = time.monotonic()
         try:
-            # PRIMARY FIRST
+            # PRIMARY FIRST: SD -> Backup 1, hashing source while writing then re-hashing destination.
             for idx, photo in enumerate(selected, start=1):
                 src = Path(photo.path)
                 dest = b1 / photo.renamed
-                self._emit(progress, stage="primary", message=f"Primary backup: {photo.original_name}", current=idx-1, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=(bytes_done / max(0.001, time.monotonic()-start)))
+                self._emit(progress, stage="primary", message=f"Primary backup: {photo.original_name}", current=idx-1, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=(bytes_done / max(0.001, time.monotonic()-start_time)))
 
                 def add_bytes(n: int) -> None:
                     nonlocal bytes_done
                     bytes_done += n
-                    self._emit(progress, stage="primary", message=f"Primary backup: {photo.original_name}", current=idx-1, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=(bytes_done / max(0.001, time.monotonic()-start)))
+                    self._emit(progress, stage="primary", message=f"Primary backup: {photo.original_name}", current=idx-1, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=(bytes_done / max(0.001, time.monotonic()-start_time)))
 
                 digest = self._copy_source_to_primary(src, dest, photo.size, add_bytes)
                 photo.sha256 = digest
                 manifest["selected_files"].append({
-                    "source": photo.path,
-                    "original_name": photo.original_name,
-                    "number": photo.number,
-                    "renamed": photo.renamed,
-                    "size": photo.size,
-                    "sha256": digest,
+                    "source": photo.path, "original_name": photo.original_name, "number": photo.number,
+                    "renamed": photo.renamed, "size": photo.size, "sha256": digest,
                 })
                 self.storage.save_manifest(job_id, manifest)
 
@@ -495,62 +497,29 @@ class BackupEngine:
             self.storage.upsert_job(self._job_row(manifest, manifest_path))
             self._emit(progress, stage="primary_ready", message="Primary backup verified and ready", current=len(selected), total=len(selected), bytes_done=total_bytes, bytes_total=total_bytes, rate_bps=0)
 
-            # SECONDARY BACKUPS from verified primary
-            mode = self.storage.get_setting("secondary_copy_mode", "auto")
-            if mode == "auto":
-                mode = "parallel" if path_network_identity(b2) != path_network_identity(b3) else "sequential"
+            # SECOND LOCAL COPY: verified Backup 1 -> Backup 2.
+            for i, item in enumerate(manifest["selected_files"], start=1):
+                if self.cancel_event.is_set():
+                    raise BackupError("Backup cancelled")
+                if not b2.exists():
+                    raise BackupError("Connection lost to Backup 2")
+                src = b1 / item["renamed"]
+                dest = b2 / item["renamed"]
+                self._copy_verified_file(src, dest, item["size"], item["sha256"])
+                self._emit(progress, stage="backup2", message=f"Backup 2: {item['renamed']}", current=i, total=len(selected), bytes_done=i, bytes_total=len(selected), rate_bps=0)
+            self._verify_folder_count(b2, len(selected))
+            manifest["backups"]["backup2"]["status"] = "verified"
+            self._write_manifest_copy(b2, manifest)
 
-            def copy_secondary(label: str, dest_folder: Path) -> None:
-                for i, item in enumerate(manifest["selected_files"], start=1):
-                    if self.cancel_event.is_set():
-                        raise BackupError("Backup cancelled")
-                    # Re-check destination connectivity often enough to fail fast on network loss.
-                    if not dest_folder.exists():
-                        raise BackupError(f"Connection lost to {label}")
-                    src = b1 / item["renamed"]
-                    dest = dest_folder / item["renamed"]
-                    self._copy_verified_file(src, dest, item["size"], item["sha256"])
-                    self._emit(progress, stage=label, message=f"{label}: {item['renamed']}", current=i, total=len(selected), bytes_done=i, bytes_total=len(selected), rate_bps=0)
-                self._verify_folder_count(dest_folder, len(selected))
-
-            if mode == "parallel":
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
-                    futures = {
-                        ex.submit(copy_secondary, "backup2", b2): ("backup2", b2),
-                        ex.submit(copy_secondary, "backup3", b3): ("backup3", b3),
-                    }
-                    for fut in concurrent.futures.as_completed(futures):
-                        label, folder = futures[fut]
-                        try:
-                            fut.result()
-                        except Exception:
-                            self.cancel_event.set()
-                            for other in futures:
-                                other.cancel()
-                            raise
-                        manifest["backups"][label]["status"] = "verified"
-                        self._write_manifest_copy(folder, manifest)
-                        self.storage.save_manifest(job_id, manifest)
-                        self.storage.upsert_job(self._job_row(manifest, manifest_path))
-            else:
-                for label, folder in (("backup2", b2), ("backup3", b3)):
-                    copy_secondary(label, folder)
-                    manifest["backups"][label]["status"] = "verified"
-                    self._write_manifest_copy(folder, manifest)
-                    self.storage.save_manifest(job_id, manifest)
-                    self.storage.upsert_job(self._job_row(manifest, manifest_path))
-
-            # Final invariant: every file already passed an independent exact-size + SHA-256
-            # verification in each destination. Re-check counts/partials without another costly
-            # full network hash pass.
-            for folder in (b1, b2, b3):
+            # Final local invariant. Dropbox is not part of the SD-card deletion gate.
+            for folder in (b1, b2):
                 self._verify_folder_count(folder, len(selected))
-            if not all(manifest["backups"][k]["status"] == "verified" for k in ("backup1", "backup2", "backup3")):
-                raise BackupError("Final verification state is incomplete")
+            if not all(manifest["backups"][k]["status"] == "verified" for k in ("backup1", "backup2")):
+                raise BackupError("Final 2/2 local verification state is incomplete")
 
-            manifest["status"] = "verified_3_of_3"
+            manifest["status"] = "verified_2_of_2_dropbox_pending"
             self.storage.save_manifest(job_id, manifest)
-            for folder in (b1, b2, b3):
+            for folder in (b1, b2):
                 self._write_manifest_copy(folder, manifest)
             self.storage.upsert_job(self._job_row(manifest, manifest_path))
 
@@ -559,17 +528,16 @@ class BackupEngine:
             sent, _ = self.eventlog.try_send_job(job_id)
             manifest["eventlog_status"] = "sent" if sent else "queued"
 
-            # Deletion applies ONLY to selected + fully verified originals and always
-            # goes through the final 3/3 network-availability gate.
+            # Normally UI asks for a final confirmation after the two local copies are safe.
             if spec.delete_after_verified:
                 self.delete_verified_sources(manifest)
                 manifest["sd_deleted"] = True
 
             self.storage.save_manifest(job_id, manifest)
-            for folder in (b1, b2, b3):
+            for folder in (b1, b2):
                 self._write_manifest_copy(folder, manifest)
             self.storage.upsert_job(self._job_row(manifest, manifest_path))
-            self._emit(progress, stage="complete", message="3/3 backups verified byte-for-byte", current=len(selected), total=len(selected), bytes_done=total_bytes, bytes_total=total_bytes, rate_bps=0)
+            self._emit(progress, stage="complete", message="2/2 local backups verified byte-for-byte — Dropbox can continue in background", current=len(selected), total=len(selected), bytes_done=total_bytes, bytes_total=total_bytes, rate_bps=0)
             return manifest
 
         except Exception as exc:
@@ -611,9 +579,9 @@ class BackupEngine:
             "excluded_count": len([p for p in photos if not p.selected]),
             "selected_files": [],
             "backups": {
-                "backup1": {"path": "", "status": "pending_network"},
-                "backup2": {"path": "", "status": "pending_network"},
-                "backup3": {"path": "", "status": "pending_network"},
+                "backup1": {"path": "", "status": "pending_local"},
+                "backup2": {"path": "", "status": "pending_local"},
+                "dropbox": {"path": f"{DROPBOX_DESTINATION}/{folder_name}", "status": "pending", "uploaded": []},
                 "emergency": {"path": str(dest_folder), "status": "running"},
             },
             "status": "emergency_running",
@@ -644,7 +612,7 @@ class BackupEngine:
 
             self._verify_folder_count(dest_folder, len(selected))
             manifest["backups"]["emergency"]["status"] = "verified"
-            manifest["status"] = "emergency_verified_network_pending"
+            manifest["status"] = "emergency_verified_local_backups_pending"
             self._write_manifest_copy(dest_folder, manifest)
             self.storage.save_manifest(job_id, manifest)
             self.storage.upsert_job(self._job_row(manifest, manifest_path))
@@ -653,7 +621,7 @@ class BackupEngine:
             manifest["eventlog_status"] = "sent" if sent else "queued"
             self.storage.save_manifest(job_id, manifest)
             self.storage.upsert_job(self._job_row(manifest, manifest_path))
-            self._emit(progress, stage="emergency_complete", message="Emergency local backup verified. Network backup still required.", current=len(selected), total=len(selected), bytes_done=total_bytes, bytes_total=total_bytes, rate_bps=0)
+            self._emit(progress, stage="emergency_complete", message="Emergency backup verified. Two normal local backups are still required.", current=len(selected), total=len(selected), bytes_done=total_bytes, bytes_total=total_bytes, rate_bps=0)
             return manifest
         except Exception as exc:
             manifest["status"] = "interrupted"
@@ -664,6 +632,7 @@ class BackupEngine:
             raise
 
     def complete_emergency_to_network(self, job_id: str, progress: Callable[[ProgressEvent], None] | None = None) -> dict[str, Any]:
+        """Promote a verified emergency copy into the two required normal local backups."""
         self.reset_cancel()
         manifest = self.storage.load_manifest(job_id)
         if not manifest:
@@ -683,7 +652,6 @@ class BackupEngine:
         dests = {
             "backup1": Path(self.storage.get_setting("backup1_path")) / folder_name,
             "backup2": Path(self.storage.get_setting("backup2_path")) / folder_name,
-            "backup3": Path(self.storage.get_setting("backup3_path")) / folder_name,
         }
         for d in dests.values():
             d.mkdir(parents=True, exist_ok=True)
@@ -699,7 +667,8 @@ class BackupEngine:
                 manifest["backups"][label] = {"path": str(folder), "status": "verified"}
                 self._write_manifest_copy(folder, manifest)
                 self.storage.save_manifest(job_id, manifest)
-            manifest["status"] = "verified_3_of_3"
+            manifest.setdefault("backups", {}).setdefault("dropbox", {"path": f"{DROPBOX_DESTINATION}/{folder_name}", "status": "pending", "uploaded": []})
+            manifest["status"] = "verified_2_of_2_dropbox_pending"
             self.storage.save_manifest(job_id, manifest)
             row = self.storage.get_job(job_id)
             manifest_path = Path(row["manifest_path"]) if row else self.storage.save_manifest(job_id, manifest)
@@ -715,13 +684,11 @@ class BackupEngine:
             raise
 
     def delete_verified_sources(self, manifest: dict[str, Any]) -> None:
-        """Final deletion gate. Never delete unless 3/3 is still visibly present/reachable."""
-        if manifest.get("status") != "verified_3_of_3":
-            raise BackupError("SD deletion blocked: job is not 3/3 verified")
+        """Final deletion gate. Dropbox is deliberately NOT required to clear the SD card."""
         files = manifest.get("selected_files", [])
         if not files:
             raise BackupError("SD deletion blocked: no verified files in manifest")
-        for key in ("backup1", "backup2", "backup3"):
+        for key in ("backup1", "backup2"):
             info = manifest.get("backups", {}).get(key, {})
             if info.get("status") != "verified":
                 raise BackupError(f"SD deletion blocked: {key} is not verified")
@@ -736,7 +703,7 @@ class BackupEngine:
         self._delete_selected_originals(manifest)
 
     def _delete_selected_originals(self, manifest: dict[str, Any]) -> None:
-        # This method is called only after the final 3/3 full hash verification.
+        # This method is called only after both required local backups have been verified.
         for item in manifest["selected_files"]:
             p = Path(item["source"])
             if p.exists():
@@ -769,7 +736,7 @@ class BackupEngine:
             "backup_status": manifest["status"],
             "primary_status": manifest["backups"]["backup1"]["status"],
             "backup2_status": manifest["backups"]["backup2"]["status"],
-            "backup3_status": manifest["backups"]["backup3"]["status"],
+            "dropbox_status": manifest["backups"].get("dropbox", {"status": "pending"})["status"],
             "emergency_status": manifest["backups"]["emergency"]["status"],
             "folder_name": manifest["folder_name"],
         }
