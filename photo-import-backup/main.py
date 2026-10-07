@@ -1,4 +1,5 @@
 import sys
+import ctypes
 from pathlib import Path
 
 
@@ -33,6 +34,14 @@ def packaged_self_test() -> int:
 if __name__ == "__main__":
     if "--self-test" in sys.argv:
         raise SystemExit(packaged_self_test())
+
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "TangaloomaPhotoShop.TPSPhotoImportBackup"
+            )
+        except Exception:
+            pass
 
     from tps_backup.ui import TPSApp
 
