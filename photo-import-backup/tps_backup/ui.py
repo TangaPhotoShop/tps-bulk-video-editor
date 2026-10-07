@@ -897,8 +897,7 @@ class TPSApp(tk.Tk):
         people.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         people.grid_columnconfigure(0, weight=1)
         tk.Label(people, text="PHOTOGRAPHERS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14,8))
-        self.people_tree = ttk.Treeview(people, columns=("name","initials"), show="headings", height=7)
-        self.people_tree.heading("name", text="Name")
+        self.people_tree = ttk.Treeview(people, columns=("name","initials"), show="headings", height=7)        self.people_tree.heading("name", text="Name")
         self.people_tree.heading("initials", text="Initials")
         self.people_tree.column("name", width=260)
         self.people_tree.column("initials", width=100)
@@ -998,3 +997,158 @@ class TPSApp(tk.Tk):
     def admin_add_event(self):
         e = self._event_dialog()
         if not e: return
+        events = self.storage.get_setting("events", []); events.append(e); self.storage.set_setting("events", events); self.refresh_admin_events()
+
+    def admin_edit_event(self):
+        sel = self.events_tree.selection()
+        if not sel: return
+        idx = int(sel[0]); events = self.storage.get_setting("events", [])
+        e = self._event_dialog(events[idx])
+        if not e: return
+        events[idx] = e; self.storage.set_setting("events", events); self.refresh_admin_events()
+
+    def admin_remove_event(self):
+        sel = self.events_tree.selection()
+        if not sel: return
+        events = self.storage.get_setting("events", []); del events[int(sel[0])]; self.storage.set_setting("events", events); self.refresh_admin_events()
+
+    def save_admin_settings(self, show_message: bool = True):
+        for key, var in self.admin_path_vars.items():
+            self.storage.set_setting(key, var.get().strip())
+        self.storage.set_setting("dropbox_app_key", self.dropbox_app_key_var.get().strip())
+        self.storage.set_setting("eventlog_url", self.eventlog_url_var.get().strip())
+        self.storage.set_setting("eventlog_api_key", self.eventlog_key_var.get().strip())
+        self.storage.set_setting("delete_after_verified_default", bool(self.admin_delete_default_var.get()))
+        self.delete_var.set(bool(self.admin_delete_default_var.get()))
+        self.load_reference_data()
+        if show_message:
+            messagebox.showinfo("Admin settings", "Settings saved. Staff cannot edit the configured backup locations from the Import screen.", parent=self)
+
+    def admin_test_locations(self):
+        self.save_admin_settings(show_message=False)
+        checks = self.engine.preflight_all(1024 * 1024)
+        lines = []
+        for key in ("backup1","backup2"):
+            ok, msg, free = checks[key]
+            lines.append(f"{key.upper()}: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
+        epath = self.storage.get_setting("emergency_path", "")
+        ok, msg, free = self.engine.preflight_path(epath, 1024 * 1024)
+        lines.append(f"EMERGENCY: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
+        messagebox.showinfo("Backup location test", "\n".join(lines), parent=self)
+
+    def admin_speed_test(self):
+        self.save_admin_settings(show_message=False)
+        if not messagebox.askyesno("Backup speed test", "Write and read a temporary 32 MB test file on each configured location?\n\nNo photo files are changed.", parent=self):
+            return
+        lines = []
+        for label, key in [("Backup 1", "backup1_path"), ("Backup 2", "backup2_path"), ("Emergency", "emergency_path")]:
+            raw = self.storage.get_setting(key, "")
+            ok, msg, write_mbps, read_mbps = self.engine.benchmark_path(raw, 32)
+            if ok:
+                lines.append(f"{label}: write {write_mbps:.1f} MB/s • read {read_mbps:.1f} MB/s")
+            else:
+                lines.append(f"{label}: FAILED — {msg}")
+        messagebox.showinfo("Backup speed test", "\n".join(lines), parent=self)
+
+    def refresh_dropbox_admin_status(self):
+        if not hasattr(self, "dropbox_admin_status"):
+            return
+        label = self.dropbox.connection_label()
+        self.dropbox_admin_status.configure(text=label, fg=(GREEN if self.dropbox.configured() else ORANGE))
+
+    def admin_connect_dropbox(self):
+        app_key = self.dropbox_app_key_var.get().strip()
+        if not app_key:
+            messagebox.showwarning("Dropbox App key", "Enter the Dropbox App key first. The Dropbox API app must use Full Dropbox access.", parent=self)
+            return
+        self.storage.set_setting("dropbox_app_key", app_key)
+        try:
+            self.dropbox.start_oauth(app_key)
+            code = simpledialog.askstring(
+                "Connect Dropbox",
+                "A Dropbox authorization page has opened in your browser.\n\nApprove the TPS Photo Import & Backup app, copy the authorization code shown by Dropbox, then paste it here:",
+                parent=self,
+            )
+            if not code:
+                return
+            name, email = self.dropbox.finish_oauth(code, app_key)
+            self.refresh_dropbox_admin_status()
+            ok, msg = self.dropbox.test_connection()
+            if ok:
+                messagebox.showinfo("Dropbox connected", f"Connected as {name} ({email}).\n\nCloud backups will upload to:\n{DROPBOX_DESTINATION}", parent=self)
+                self.start_pending_dropbox_sync()
+            else:
+                messagebox.showwarning("Dropbox connected but destination unavailable", f"The account connection succeeded, but the destination could not be accessed.\n\n{msg}\n\nConfirm the Dropbox app uses Full Dropbox access and your account can edit the TPS folder.", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Dropbox connection failed", str(exc), parent=self)
+
+    def admin_test_dropbox(self):
+        self.storage.set_setting("dropbox_app_key", self.dropbox_app_key_var.get().strip())
+        ok, msg = self.dropbox.test_connection()
+        self.refresh_dropbox_admin_status()
+        if ok:
+            messagebox.showinfo("Dropbox test", f"{msg}\n\nDestination:\n{DROPBOX_DESTINATION}", parent=self)
+        else:
+            messagebox.showerror("Dropbox test failed", msg, parent=self)
+
+    def admin_disconnect_dropbox(self):
+        if not messagebox.askyesno("Disconnect Dropbox", "Disconnect this computer from Dropbox? Pending cloud backups will remain queued and local backups are unaffected.", parent=self):
+            return
+        self.dropbox.disconnect()
+        self.refresh_dropbox_admin_status()
+        if hasattr(self, "backup_status_labels"):
+            self.backup_status_labels[3].configure(text="Not connected • cloud backups remain pending", fg=ORANGE)
+
+    def start_dropbox_for_job(self, job_id: str):
+        if not self.dropbox.configured():
+            return
+        if self.dropbox_thread and self.dropbox_thread.is_alive():
+            return
+
+        def progress(done, total, name):
+            self.msg_queue.put(("dropbox_progress", (job_id, done, total, name)))
+
+        def worker():
+            try:
+                self.dropbox.upload_job(job_id, progress)
+                self.msg_queue.put(("dropbox_done", job_id))
+            except Exception as exc:
+                self.dropbox.mark_error(job_id, str(exc))
+                self.msg_queue.put(("dropbox_error", (job_id, str(exc))))
+
+        self.dropbox_thread = threading.Thread(target=worker, daemon=True, name="TPSDropboxUpload")
+        self.dropbox_thread.start()
+
+    def start_pending_dropbox_sync(self):
+        if not self.dropbox.configured():
+            return
+        if self.dropbox_thread and self.dropbox_thread.is_alive():
+            return
+        pending = self.dropbox.pending_jobs(limit=100)
+        if not pending:
+            return
+
+        def progress(done, total, name):
+            self.msg_queue.put(("dropbox_progress", (pending[0], done, total, name)))
+
+        def worker():
+            for job_id in pending:
+                try:
+                    self.dropbox.upload_job(job_id, progress)
+                    self.msg_queue.put(("dropbox_done", job_id))
+                except Exception as exc:
+                    self.dropbox.mark_error(job_id, str(exc))
+                    self.msg_queue.put(("dropbox_error", (job_id, str(exc))))
+                    # Most failures are connectivity/auth related; wait for next launch/manual test.
+                    break
+
+        self.dropbox_thread = threading.Thread(target=worker, daemon=True, name="TPSDropboxPending")
+        self.dropbox_thread.start()
+
+    def on_close(self):
+        cloud_running = bool(self.dropbox_thread and self.dropbox_thread.is_alive())
+        msg = "Exit the application?"
+        if cloud_running:
+            msg = "A Dropbox upload is still in progress.\n\nYou can still exit safely: both local backups are already verified and the Dropbox upload will resume next time the app starts.\n\nExit now?"
+        if messagebox.askokcancel("Exit TPS Photo Import", msg, parent=self):
+            self.destroy()
