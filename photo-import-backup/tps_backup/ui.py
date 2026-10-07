@@ -259,7 +259,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.1.7\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text="VERSION 1.1.8\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
@@ -272,6 +272,12 @@ class TPSApp(tk.Tk):
         self.show_page("import")
 
     def show_page(self, key: str):
+        # Admin access is deliberately session-scoped to the Admin page only.
+        # Leaving Admin immediately locks it again, so the 4115 code is required
+        # every time someone comes back to Admin.
+        if self.current_page == "admin" and key != "admin":
+            self.admin_unlocked = False
+
         if key == "admin" and not self.admin_unlocked:
             code = simpledialog.askstring("Admin access", "Enter admin code", show="•", parent=self)
             if not code or hashlib.sha256(code.encode()).hexdigest() != ADMIN_CODE_SHA256:
@@ -280,6 +286,7 @@ class TPSApp(tk.Tk):
                 return
             self.admin_unlocked = True
             self.load_admin_settings()
+
         self.current_page = key
         self.pages[key].tkraise()
         for k, b in self.nav_buttons.items():
@@ -1253,7 +1260,8 @@ class TPSApp(tk.Tk):
         syscard = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         syscard.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         syscard.grid_columnconfigure(1, weight=1)
-        tk.Label(syscard, text="EVENT LOG & CARD CLEARING", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(14,8))
+        tk.Label(syscard, text="EVENT LOG & CARD CLEARING", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(14,4))
+        tk.Label(syscard, text="Event Log connection is not live yet — leave the URL/key blank. Completed records are safely queued on this computer until the Event Log API is added.", bg=CARD, fg=ORANGE, font=("Segoe UI Semibold", 8), wraplength=880, justify="left").grid(row=0, column=1, sticky="w", padx=(8,16), pady=(14,4))
         tk.Label(syscard, text="Event Log API URL", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=1, column=0, sticky="w", padx=16, pady=7)
         self.eventlog_url_var = tk.StringVar()
         ttk.Entry(syscard, textvariable=self.eventlog_url_var).grid(row=1, column=1, sticky="ew", padx=(8,16), pady=7)
