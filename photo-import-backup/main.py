@@ -20,6 +20,8 @@ def packaged_self_test() -> int:
             "admin_connect_dropbox",
             "start_pending_dropbox_sync",
             "admin_add_event",
+            "start_thumbnail_generation",
+            "apply_thumbnail",
         ]
         missing = [name for name in required if not hasattr(TPSApp, name)]
         if missing:
