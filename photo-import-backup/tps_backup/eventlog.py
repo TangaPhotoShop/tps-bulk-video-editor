@@ -9,7 +9,8 @@ from typing import Any
 from .storage import Storage
 
 DEFAULT_EVENTLOG_ENDPOINT = "https://tps-event-log-import-api-production.up.railway.app/api/photo-import"
-DEFAULT_EVENTLOG_HEALTH = "https://tps-event-log-import-api-production.up.railway.app/health"\nDEFAULT_EVENTLOG_AUTH_TEST = "https://tps-event-log-import-api-production.up.railway.app/api/auth-test"
+DEFAULT_EVENTLOG_HEALTH = "https://tps-event-log-import-api-production.up.railway.app/health"
+DEFAULT_EVENTLOG_AUTH_TEST = "https://tps-event-log-import-api-production.up.railway.app/api/auth-test"
 DEFAULT_EVENTLOG_IMPORT_KEY = "gkq-yDOoj8rao_HLsN4cPovcMBJXKb5aRpM-l8s5eSc"
 
 
