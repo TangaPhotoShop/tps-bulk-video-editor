@@ -275,28 +275,32 @@ class TPSApp(tk.Tk):
         self.show_page("import")
 
     def _on_mousewheel(self, event):
-        """Scroll the pane currently under the pointer without hijacking unrelated controls."""
+        """Scroll the pane under the pointer and bubble to Admin when a list hits its edge."""
         try:
             widget = self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery())
             if widget is None:
                 return
+            units = -1 if event.delta > 0 else 1
 
-            # If the pointer is over any Treeview, scroll that list/table.
+            # Prefer the list/table directly under the pointer, but only if it can
+            # actually move in the requested direction.
             current = widget
             while current is not None:
                 if isinstance(current, ttk.Treeview):
-                    units = -1 if event.delta > 0 else 1
-                    current.yview_scroll(units * 3, "units")
-                    return "break"
+                    first, last = current.yview()
+                    can_move = (units < 0 and first > 0.0) or (units > 0 and last < 1.0)
+                    if can_move:
+                        current.yview_scroll(units * 3, "units")
+                        return "break"
+                    break
                 current = getattr(current, "master", None)
 
-            # Admin is a vertically scrolling page. Wheel anywhere over its content
-            # scrolls the Admin canvas, including labels, buttons and entry fields.
+            # Admin is a vertically scrolling page. Wheel anywhere over Admin
+            # content scrolls the page when an inner list cannot move further.
             if self.current_page == "admin" and hasattr(self, "admin_canvas"):
                 current = widget
                 while current is not None:
                     if current is getattr(self, "admin_canvas", None) or current is getattr(self, "admin_inner", None):
-                        units = -1 if event.delta > 0 else 1
                         self.admin_canvas.yview_scroll(units * 3, "units")
                         return "break"
                     current = getattr(current, "master", None)
