@@ -46,6 +46,7 @@ jobs:
         shell: pwsh
         run: |
           python -m py_compile main.py tps_backup\backup_engine.py tps_backup\dropbox_client.py tps_backup\eventlog.py tps_backup\storage.py tps_backup\ui.py
+          python -c "from tps_backup.ui import TPSApp; required=['on_close','save_admin_settings','admin_connect_dropbox','start_pending_dropbox_sync','admin_add_event']; missing=[x for x in required if not hasattr(TPSApp,x)]; assert not missing, f'Missing UI methods: {missing}'; print('UI smoke check OK')"
           python -c "import dropbox; print('Dropbox SDK', dropbox.__version__)"
 
       - name: Build standalone EXE
@@ -68,8 +69,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TPS-Photo-Import-Backup-Windows-v1.1.0
+          name: TPS-Photo-Import-Backup-Windows-v1.1.1
           path: |
             photo-import-backup/dist/TPS Photo Import & Backup.exe
-            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.0.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.1.exe
           if-no-files-found: error
