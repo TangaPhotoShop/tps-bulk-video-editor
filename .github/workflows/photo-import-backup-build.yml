@@ -25,48 +25,80 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Create distinct purple TPS Photo Import app icon
+      - name: Create sharp SD-card cloud backup app icon
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path assets -Force | Out-Null
           @'
           from PIL import Image, ImageDraw
 
-          S = 1024
-          PURPLE = (104, 43, 180, 255)
-          PURPLE_DARK = (71, 25, 128, 255)
+          VIOLET = (102, 45, 190, 255)
+          VIOLET_DARK = (54, 20, 108, 255)
+          CYAN = (74, 226, 255, 255)
           WHITE = (255, 255, 255, 255)
-          LIME = (190, 242, 80, 255)
 
-          im = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-          d = ImageDraw.Draw(im)
+          def make_icon(size: int):
+              # Draw each Windows size independently at 4x for clean antialiasing.
+              scale = 4
+              s = size * scale
+              def p(v): return int(round(v * s))
+              im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+              d = ImageDraw.Draw(im)
 
-          # Bold flat purple tile so it remains recognizable at 16-32 px.
-          d.rounded_rectangle((48, 48, 976, 976), radius=210, fill=PURPLE)
-          d.rounded_rectangle((76, 76, 948, 948), radius=186, outline=PURPLE_DARK, width=26)
+              # Flat high-contrast violet tile.
+              d.rounded_rectangle((p(.035), p(.035), p(.965), p(.965)), radius=p(.19), fill=VIOLET)
+              d.rounded_rectangle((p(.055), p(.055), p(.945), p(.945)), radius=p(.17), outline=VIOLET_DARK, width=max(1, p(.025)))
 
-          # SD-card silhouette - deliberately not a camera icon.
-          card = [(205, 210), (625, 210), (770, 355), (770, 715), (205, 715)]
-          d.polygon(card, fill=WHITE)
-          d.polygon([(625, 210), (625, 355), (770, 355)], fill=PURPLE_DARK)
+              # White SD card - dominant symbol, readable at 16 px.
+              card = [(p(.17), p(.22)), (p(.57), p(.22)), (p(.70), p(.35)), (p(.70), p(.76)), (p(.17), p(.76))]
+              d.polygon(card, fill=WHITE)
+              d.polygon([(p(.57), p(.22)), (p(.57), p(.35)), (p(.70), p(.35))], fill=VIOLET_DARK)
 
-          # Photo mark inside the card.
-          d.rounded_rectangle((285, 385, 660, 620), radius=34, fill=PURPLE_DARK)
-          d.ellipse((340, 430, 410, 500), fill=WHITE)
-          d.polygon([(315, 585), (435, 485), (520, 560), (575, 510), (635, 585)], fill=WHITE)
+              # SD contacts.
+              for x in (.23, .31, .39, .47, .55):
+                  d.rounded_rectangle((p(x), p(.27), p(x+.045), p(.36)), radius=p(.012), fill=VIOLET_DARK)
 
-          # Strong lime import/backup arrow.
-          d.rounded_rectangle((585, 555, 655, 800), radius=22, fill=LIME)
-          d.polygon([(510, 760), (620, 900), (730, 760)], fill=LIME)
+              # Photo window on SD card.
+              d.rounded_rectangle((p(.235), p(.42), p(.62), p(.68)), radius=p(.035), fill=VIOLET_DARK)
+              d.ellipse((p(.28), p(.46), p(.35), p(.53)), fill=WHITE)
+              d.polygon([(p(.26), p(.64)), (p(.38), p(.53)), (p(.47), p(.61)), (p(.53), p(.55)), (p(.60), p(.64))], fill=WHITE)
 
-          # Two local-copy bars beneath the SD card.
-          d.rounded_rectangle((245, 765, 480, 810), radius=20, fill=WHITE)
-          d.rounded_rectangle((245, 835, 480, 880), radius=20, fill=WHITE)
+              # Cloud shape behind arrow - simple solid white silhouette.
+              d.ellipse((p(.57), p(.15), p(.75), p(.33)), fill=WHITE)
+              d.ellipse((p(.68), p(.11), p(.88), p(.33)), fill=WHITE)
+              d.ellipse((p(.78), p(.18), p(.94), p(.34)), fill=WHITE)
+              d.rectangle((p(.62), p(.24), p(.89), p(.34)), fill=WHITE)
 
-          im.save("assets/tps_photo_backup_1024.png")
-          im.resize((256, 256), Image.Resampling.LANCZOS).save("assets/tps_photo_backup.png")
-          im.save("assets/tps_photo_backup.ico", sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
-          im.save("assets/favicon.ico", sizes=[(16,16),(32,32),(48,48)])
+              # Cyan upload/backup arrow - large and unmistakable.
+              d.rounded_rectangle((p(.72), p(.43), p(.80), p(.77)), radius=p(.018), fill=CYAN)
+              d.polygon([(p(.62), p(.50)), (p(.76), p(.35)), (p(.90), p(.50))], fill=CYAN)
+
+              # At tiny sizes reduce visual noise by overpainting the photo details slightly.
+              if size <= 20:
+                  d.rounded_rectangle((p(.25), p(.43), p(.61), p(.67)), radius=p(.03), fill=VIOLET_DARK)
+                  d.polygon([(p(.28), p(.64)), (p(.40), p(.53)), (p(.50), p(.61)), (p(.58), p(.54)), (p(.61), p(.64))], fill=WHITE)
+
+              return im.resize((size, size), Image.Resampling.LANCZOS)
+
+          sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256]
+          frames = [make_icon(s) for s in sizes]
+
+          # The in-app brand image uses the same exact symbol.
+          frames[-1].save("assets/tps_photo_backup.png")
+          make_icon(1024).save("assets/tps_photo_backup_1024.png")
+
+          # True multi-resolution ICO: Windows does not need to shrink one large bitmap.
+          frames[-1].save(
+              "assets/tps_photo_backup.ico",
+              format="ICO",
+              append_images=frames[:-1],
+          )
+          favicon_frames = [make_icon(s) for s in (16, 32, 48)]
+          favicon_frames[-1].save(
+              "assets/favicon.ico",
+              format="ICO",
+              append_images=favicon_frames[:-1],
+          )
           '@ | Set-Content -Encoding UTF8 make_icon.py
           python make_icon.py
 
@@ -74,7 +106,7 @@ jobs:
         shell: pwsh
         run: |
           python -m py_compile main.py tps_backup\backup_engine.py tps_backup\dropbox_client.py tps_backup\eventlog.py tps_backup\storage.py tps_backup\ui.py
-          python -c "from tps_backup.ui import TPSApp, windows_camera_sd_candidates; required=['on_close','save_admin_settings','admin_connect_dropbox','start_pending_dropbox_sync','admin_add_event','monitor_sd_cards','sort_history_by','clear_history_filters']; missing=[x for x in required if not hasattr(TPSApp,x)]; assert not missing, f'Missing UI methods: {missing}'; assert callable(windows_camera_sd_candidates); print('Source UI/SD detection smoke check OK')"
+          python -c "from tps_backup.ui import TPSApp, windows_camera_sd_candidates; required=['on_close','save_admin_settings','admin_connect_dropbox','start_pending_dropbox_sync','admin_add_event','monitor_sd_cards','sort_history_by','clear_history_filters','start_thumbnail_generation','apply_thumbnail']; missing=[x for x in required if not hasattr(TPSApp,x)]; assert not missing, f'Missing UI methods: {missing}'; assert callable(windows_camera_sd_candidates); print('Source UI/SD detection smoke check OK')"
           python -c "import dropbox; print('Dropbox SDK', dropbox.__version__)"
           python -c "import compileall; assert compileall.compile_dir('.', quiet=1); from tps_backup.ui import TPSApp; assert hasattr(TPSApp,'on_close'); print('FINAL SOURCE VALIDATION OK')"
 
@@ -121,7 +153,7 @@ jobs:
           }
           $result = Get-Content "tps_photo_import_self_test.txt" -Raw
           Write-Host $result
-          if ($result -notmatch "^OK 1\.1\.6") {
+          if ($result -notmatch "^OK 1\.1\.7") {
             throw "Unexpected compiled EXE self-test result: $result"
           }
 
@@ -135,10 +167,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TPS-Photo-Import-Backup-Windows-v1.1.6
+          name: TPS-Photo-Import-Backup-Windows-v1.1.7
           path: |
             photo-import-backup/dist/TPS Photo Import & Backup.exe
-            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.6.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.7.exe
           if-no-files-found: error
 
-# v1.1.6 filterable sortable history
+# v1.1.7 thumbnails + sharp SD-card icon
