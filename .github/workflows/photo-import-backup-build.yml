@@ -46,18 +46,55 @@ jobs:
         shell: pwsh
         run: |
           python -m py_compile main.py tps_backup\backup_engine.py tps_backup\dropbox_client.py tps_backup\eventlog.py tps_backup\storage.py tps_backup\ui.py
-          python -c "from tps_backup.ui import TPSApp; required=['on_close','save_admin_settings','admin_connect_dropbox','start_pending_dropbox_sync','admin_add_event']; missing=[x for x in required if not hasattr(TPSApp,x)]; assert not missing, f'Missing UI methods: {missing}'; print('UI smoke check OK')"
+          python -c "from tps_backup.ui import TPSApp; required=['on_close','save_admin_settings','admin_connect_dropbox','start_pending_dropbox_sync','admin_add_event']; missing=[x for x in required if not hasattr(TPSApp,x)]; assert not missing, f'Missing UI methods: {missing}'; print('Source UI smoke check OK')"
           python -c "import dropbox; print('Dropbox SDK', dropbox.__version__)"
 
-      - name: Build standalone EXE
+      - name: Build standalone EXE with explicit TPS package inclusion
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
             --name "TPS Photo Import & Backup" `
             --icon "assets\tps_photo_backup.ico" `
+            --paths "." `
             --add-data "assets;assets" `
-            --collect-all dropbox `
+            --hidden-import "tps_backup" `
+            --hidden-import "tps_backup.ui" `
+            --hidden-import "tps_backup.backup_engine" `
+            --hidden-import "tps_backup.storage" `
+            --hidden-import "tps_backup.eventlog" `
+            --hidden-import "tps_backup.dropbox_client" `
+            --collect-submodules "tps_backup" `
+            --collect-all "dropbox" `
             main.py
+
+      - name: Verify TPS modules exist inside compiled EXE archive
+        shell: pwsh
+        run: |
+          pyi-archive_viewer -l -r "dist\TPS Photo Import & Backup.exe" | Tee-Object -FilePath pyinstaller-archive.txt
+          $archive = Get-Content pyinstaller-archive.txt -Raw
+          foreach ($module in @("tps_backup.ui", "tps_backup.backup_engine", "tps_backup.storage", "tps_backup.dropbox_client", "tps_backup.eventlog")) {
+            if ($archive -notmatch [regex]::Escape($module)) {
+              throw "Compiled EXE archive is missing required module: $module"
+            }
+          }
+
+      - name: Run compiled EXE self-test
+        shell: pwsh
+        run: |
+          Remove-Item "tps_photo_import_self_test.txt" -ErrorAction SilentlyContinue
+          $p = Start-Process -FilePath (Resolve-Path "dist\TPS Photo Import & Backup.exe") -ArgumentList "--self-test" -WorkingDirectory (Get-Location) -Wait -PassThru
+          if ($p.ExitCode -ne 0) {
+            if (Test-Path "tps_photo_import_self_test.txt") { Get-Content "tps_photo_import_self_test.txt" }
+            throw "Compiled EXE self-test failed with exit code $($p.ExitCode)"
+          }
+          if (-not (Test-Path "tps_photo_import_self_test.txt")) {
+            throw "Compiled EXE self-test did not produce its success marker."
+          }
+          $result = Get-Content "tps_photo_import_self_test.txt" -Raw
+          Write-Host $result
+          if ($result -notmatch "^OK 1\.1\.2") {
+            throw "Unexpected compiled EXE self-test result: $result"
+          }
 
       - name: Install Inno Setup
         shell: pwsh
@@ -69,8 +106,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TPS-Photo-Import-Backup-Windows-v1.1.1
+          name: TPS-Photo-Import-Backup-Windows-v1.1.2
           path: |
             photo-import-backup/dist/TPS Photo Import & Backup.exe
-            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.1.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.2.exe
           if-no-files-found: error
