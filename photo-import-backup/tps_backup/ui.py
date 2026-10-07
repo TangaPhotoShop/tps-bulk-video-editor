@@ -897,7 +897,7 @@ class TPSApp(tk.Tk):
         people.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         people.grid_columnconfigure(0, weight=1)
         tk.Label(people, text="PHOTOGRAPHERS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14,8))
-        self.people_tree = ttk.Treeview(people, columns=("name","initials"), show="headings", height=7)        self.people_tree.heading("name", text="Name")
+        self.people_tree = ttk.Treeview(people, columns=("name","initials"), show="headings", height=7)\n        self.people_tree.heading("name", text="Name")
         self.people_tree.heading("initials", text="Initials")
         self.people_tree.column("name", width=260)
         self.people_tree.column("initials", width=100)
