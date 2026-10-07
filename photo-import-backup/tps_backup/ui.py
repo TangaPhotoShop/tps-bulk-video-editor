@@ -184,6 +184,7 @@ class TPSApp(tk.Tk):
 
         self._style()
         self._layout()
+        self.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
         self.after(300, self.poll_queue)
         self.after(700, lambda: self.monitor_sd_cards(initial=True))
         self.after(1800, self.start_pending_dropbox_sync)
@@ -272,6 +273,35 @@ class TPSApp(tk.Tk):
         self.build_history_page()
         self.build_admin_page()
         self.show_page("import")
+
+    def _on_mousewheel(self, event):
+        """Scroll the pane currently under the pointer without hijacking unrelated controls."""
+        try:
+            widget = self.winfo_containing(self.winfo_pointerx(), self.winfo_pointery())
+            if widget is None:
+                return
+
+            # If the pointer is over any Treeview, scroll that list/table.
+            current = widget
+            while current is not None:
+                if isinstance(current, ttk.Treeview):
+                    units = -1 if event.delta > 0 else 1
+                    current.yview_scroll(units * 3, "units")
+                    return "break"
+                current = getattr(current, "master", None)
+
+            # Admin is a vertically scrolling page. Wheel anywhere over its content
+            # scrolls the Admin canvas, including labels, buttons and entry fields.
+            if self.current_page == "admin" and hasattr(self, "admin_canvas"):
+                current = widget
+                while current is not None:
+                    if current is getattr(self, "admin_canvas", None) or current is getattr(self, "admin_inner", None):
+                        units = -1 if event.delta > 0 else 1
+                        self.admin_canvas.yview_scroll(units * 3, "units")
+                        return "break"
+                    current = getattr(current, "master", None)
+        except Exception:
+            return
 
     def show_page(self, key: str):
         # Admin access is deliberately session-scoped to the Admin page only.
@@ -1060,7 +1090,14 @@ class TPSApp(tk.Tk):
             label, width = self.history_headings[c]
             self.history_tree.heading(c, text=label, command=lambda col=c: self.sort_history_by(col))
             self.history_tree.column(c, width=width, anchor="w")
-        self.history_tree.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        history_wrap = tk.Frame(card, bg=CARD)
+        history_wrap.grid(row=2, column=0, sticky="nsew", padx=16, pady=(0, 16))
+        history_wrap.grid_rowconfigure(0, weight=1)
+        history_wrap.grid_columnconfigure(0, weight=1)
+        self.history_tree.grid(in_=history_wrap, row=0, column=0, sticky="nsew", padx=0, pady=0)
+        history_scroll = ttk.Scrollbar(history_wrap, orient="vertical", command=self.history_tree.yview)
+        history_scroll.grid(row=0, column=1, sticky="ns")
+        self.history_tree.configure(yscrollcommand=history_scroll.set)
 
         self.refresh_history()
 
@@ -1263,11 +1300,13 @@ class TPSApp(tk.Tk):
         ttk.Label(head, text="Locked local backup destinations, Dropbox cloud backup, emergency storage and system configuration.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
 
         canvas = tk.Canvas(page, bg=BG, highlightthickness=0)
+        self.admin_canvas = canvas
         canvas.grid(row=1, column=0, sticky="nsew", padx=34, pady=(0, 24))
         sb = ttk.Scrollbar(page, orient="vertical", command=canvas.yview)
         sb.grid(row=1, column=1, sticky="ns", pady=(0,24))
         canvas.configure(yscrollcommand=sb.set)
         inner = tk.Frame(canvas, bg=BG)
+        self.admin_inner = inner
         win = canvas.create_window((0,0), window=inner, anchor="nw")
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
