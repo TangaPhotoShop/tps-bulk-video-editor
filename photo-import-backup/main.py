@@ -22,6 +22,8 @@ def packaged_self_test() -> int:
             "admin_add_event",
             "start_thumbnail_generation",
             "apply_thumbnail",
+            "auto_sync_eventlog_queue",
+            "admin_test_eventlog",
         ]
         missing = [name for name in required if not hasattr(TPSApp, name)]
         if missing:
