@@ -28,6 +28,7 @@ from .backup_engine import (
     discover_photos,
     safe_time_code,
 )
+from . import __version__ as APP_VERSION
 from .storage import Storage
 from .dropbox_client import DropboxBackupClient, DROPBOX_DESTINATION, DropboxBackupError
 
@@ -260,7 +261,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.2.0\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text=f"VERSION {APP_VERSION}\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
@@ -304,6 +305,7 @@ class TPSApp(tk.Tk):
         head = tk.Frame(page, bg=BG)
         head.grid(row=0, column=0, sticky="ew", padx=34, pady=(25, 14))
         ttk.Label(head, text="Import Event", style="Title.TLabel").pack(anchor="w")
+        tk.Label(head, text=f"Version {APP_VERSION}", bg=BG, fg="#7D9299", font=("Segoe UI Semibold", 8)).pack(anchor="w", pady=(1, 0))
         ttk.Label(head, text="Select the event, review the card, then create two exact local backups. Dropbox continues in the background.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
 
         self.status_banner = tk.Frame(page, bg="#E7EEE9", highlightbackground="#C5D7CE", highlightthickness=1)
@@ -972,6 +974,7 @@ class TPSApp(tk.Tk):
         head = tk.Frame(page, bg=BG)
         head.grid(row=0, column=0, sticky="ew", padx=34, pady=(25, 14))
         ttk.Label(head, text="Backup History", style="Title.TLabel").pack(anchor="w")
+        tk.Label(head, text=f"Version {APP_VERSION}", bg=BG, fg="#7D9299", font=("Segoe UI Semibold", 8)).pack(anchor="w", pady=(1, 0))
         ttk.Label(
             head,
             text="Filter and sort verified local backups, Dropbox uploads, emergency jobs and Event Log sync status.",
@@ -1256,6 +1259,7 @@ class TPSApp(tk.Tk):
         head = tk.Frame(page, bg=BG)
         head.grid(row=0, column=0, sticky="ew", padx=34, pady=(25, 14))
         ttk.Label(head, text="Admin", style="Title.TLabel").pack(anchor="w")
+        tk.Label(head, text=f"Version {APP_VERSION}", bg=BG, fg="#7D9299", font=("Segoe UI Semibold", 8)).pack(anchor="w", pady=(1, 0))
         ttk.Label(head, text="Locked local backup destinations, Dropbox cloud backup, emergency storage and system configuration.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
 
         canvas = tk.Canvas(page, bg=BG, highlightthickness=0)
