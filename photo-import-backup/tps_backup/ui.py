@@ -28,6 +28,7 @@ from .backup_engine import (
     safe_time_code,
 )
 from .storage import Storage
+from .dropbox_client import DropboxBackupClient, DROPBOX_DESTINATION, DropboxBackupError
 
 BG = "#EEF3F4"
 CARD = "#FFFFFF"
@@ -99,6 +100,8 @@ class TPSApp(tk.Tk):
         self.configure(bg=BG)
         self.storage = Storage()
         self.engine = BackupEngine(self.storage)
+        self.dropbox = DropboxBackupClient(self.storage)
+        self.dropbox_thread = None
         self.msg_queue: queue.Queue = queue.Queue()
         self.current_page = "import"
         self.photo_image = None
@@ -116,6 +119,7 @@ class TPSApp(tk.Tk):
         self._layout()
         self.after(300, self.poll_queue)
         self.after(700, self.auto_detect_source)
+        self.after(1800, self.start_pending_dropbox_sync)
 
     def _style(self):
         style = ttk.Style(self)
@@ -188,7 +192,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.0.0\nWindows desktop edition\nVerified • Primary-first • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text="VERSION 1.1.0\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
@@ -225,7 +229,7 @@ class TPSApp(tk.Tk):
         head = tk.Frame(page, bg=BG)
         head.grid(row=0, column=0, sticky="ew", padx=34, pady=(25, 14))
         ttk.Label(head, text="Import Event", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(head, text="Select the event, review the card, then create three exact verified backups.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
+        ttk.Label(head, text="Select the event, review the card, then create two exact local backups. Dropbox continues in the background.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
 
         self.status_banner = tk.Frame(page, bg="#E7EEE9", highlightbackground="#C5D7CE", highlightthickness=1)
         self.status_banner.grid(row=1, column=0, sticky="ew", padx=34, pady=(0, 14))
@@ -361,7 +365,7 @@ class TPSApp(tk.Tk):
         backup.grid_columnconfigure(0, weight=1)
         tk.Label(backup, text="BACKUP READINESS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
         self.backup_status_labels = {}
-        for i, label in enumerate(("Primary backup", "Backup 2", "Backup 3"), start=1):
+        for i, label in enumerate(("Primary backup", "Backup 2", "Dropbox cloud"), start=1):
             row = tk.Frame(backup, bg=CARD)
             row.grid(row=i, column=0, sticky="ew", padx=16, pady=2)
             tk.Label(row, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).pack(side="left")
@@ -371,7 +375,7 @@ class TPSApp(tk.Tk):
         ttk.Button(backup, text="Check network now", style="Secondary.TButton", command=self.check_network).grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 12))
 
         self.delete_var = tk.BooleanVar(value=bool(self.storage.get_setting("delete_after_verified_default", False)))
-        ttk.Checkbutton(backup, text="Delete imported files from SD only after 3/3 verification", variable=self.delete_var).grid(row=5, column=0, sticky="w", padx=16, pady=(0, 10))
+        ttk.Checkbutton(backup, text="Delete imported files from SD after 2/2 local verification", variable=self.delete_var).grid(row=5, column=0, sticky="w", padx=16, pady=(0, 10))
 
         self.folder_preview = tk.Label(backup, text="Folder preview: —", bg=CARD, fg=MUTED, anchor="w", justify="left", font=("Consolas", 8))
         self.folder_preview.grid(row=6, column=0, sticky="ew", padx=16, pady=(0, 10))
@@ -550,18 +554,20 @@ class TPSApp(tk.Tk):
         total = self.selected_bytes()
         if total <= 0:
             total = 1
-        self.set_banner("Checking all three configured backup locations…", BLUE)
+        self.set_banner("Checking both required backup locations…", BLUE)
         checks = self.engine.preflight_all(total)
         all_ok = True
-        for i, key in enumerate(("backup1", "backup2", "backup3"), start=1):
+        for i, key in enumerate(("backup1", "backup2"), start=1):
             ok, msg, free = checks[key]
             all_ok &= ok
             self.backup_status_labels[i].configure(text=(f"Ready • {human_bytes(free)} free" if ok else msg), fg=(GREEN if ok else RED))
+        cloud_text = self.dropbox.connection_label()
+        self.backup_status_labels[3].configure(text=(cloud_text + " • uploads after 2/2 local verification"), fg=(GREEN if self.dropbox.configured() else ORANGE))
         self.emergency_btn.state(["disabled"] if all_ok else ["!disabled"])
         if all_ok:
-            self.set_banner("All three network backup locations are connected and writable.", GREEN)
+            self.set_banner("Both local backup locations are connected and writable. Dropbox will not delay card release.", GREEN)
         else:
-            self.set_banner("Network backup unavailable — SD files are protected. Emergency local backup is available.", RED)
+            self.set_banner("Required backup location unavailable — SD files are protected. Emergency local backup is available.", RED)
         return all_ok
 
     def validate_event_form(self) -> str | None:
@@ -594,7 +600,7 @@ class TPSApp(tk.Tk):
             initials=self.initials_var.get().strip(), event_name=ev["name"], event_code=ev["code"],
             event_time=self.time_var.get().strip(), guests=guests, issue_type=self.issue_var.get().strip(), notes=self.notes_var.get().strip(),
             source_path=self.source_var.get().strip(), photos=self.photos,
-            delete_after_verified=(self.delete_var.get() and False),  # deletion confirmation happens after 3/3 completion in UI
+            delete_after_verified=(self.delete_var.get() and False),  # deletion confirmation happens after 2/2 local completion in UI
         )
 
     def start_backup(self, emergency: bool):
@@ -607,7 +613,7 @@ class TPSApp(tk.Tk):
                 return
         else:
             if not self.check_network():
-                messagebox.showerror("Network backup unavailable", "At least one required network backup location is unavailable.\n\nUse Emergency Local Backup instead. The SD card will not be deleted.", parent=self)
+                messagebox.showerror("Network backup unavailable", "At least one required local/filesystem backup location is unavailable.\n\nUse Emergency Local Backup instead. The SD card will not be deleted.", parent=self)
                 return
 
         spec = self.build_spec()
@@ -653,8 +659,24 @@ class TPSApp(tk.Tk):
                 elif kind == "history_done":
                     self.set_banner(payload, GREEN)
                     self.refresh_history()
+                    self.start_pending_dropbox_sync()
                 elif kind == "history_error":
                     messagebox.showerror("Could not complete backup", payload, parent=self)
+                elif kind == "dropbox_progress":
+                    job_id, done, total, name = payload
+                    if hasattr(self, "backup_status_labels"):
+                        self.backup_status_labels[3].configure(text=f"Uploading • {done}/{total} • {name}", fg=BLUE)
+                    self.refresh_history()
+                elif kind == "dropbox_done":
+                    if hasattr(self, "backup_status_labels"):
+                        self.backup_status_labels[3].configure(text="Cloud backup verified ✓", fg=GREEN)
+                    self.refresh_history()
+                    self.set_banner("2/2 LOCAL VERIFIED + DROPBOX VERIFIED ✓", GREEN)
+                elif kind == "dropbox_error":
+                    job_id, err = payload
+                    if hasattr(self, "backup_status_labels"):
+                        self.backup_status_labels[3].configure(text="Pending • will retry later", fg=ORANGE)
+                    self.refresh_history()
         except queue.Empty:
             pass
         self.after(250, self.poll_queue)
@@ -672,27 +694,32 @@ class TPSApp(tk.Tk):
         else:
             self.progress_text.configure(text=ev.message)
         if ev.stage == "primary_ready":
-            self.set_banner("PRIMARY BACKUP READY ✓ — Backup 2 and 3 continuing. Do not clear the SD card yet.", GREEN)
+            self.set_banner("PRIMARY BACKUP READY ✓ — Backup 2 is continuing. Do not clear the SD card yet.", GREEN)
 
     def handle_done(self, manifest: dict, emergency: bool):
         self.set_busy(False)
         if emergency:
             self.progress["value"] = 100
-            self.set_banner("Emergency backup verified — network backup is still pending. DO NOT clear the SD card.", ORANGE)
-            messagebox.showinfo("Emergency backup complete", f"{len(manifest['selected_files'])} photos were copied and verified locally.\n\nNetwork backup is still required.\nThe SD card has NOT been deleted.", parent=self)
+            self.set_banner("Emergency backup verified — the normal 2 local backups are still pending. DO NOT clear the SD card.", ORANGE)
+            messagebox.showinfo("Emergency backup complete", f"{len(manifest['selected_files'])} photos were copied and verified to emergency storage.\n\nThe two normal local backups are still required.\nThe SD card has NOT been deleted.", parent=self)
             return
 
         self.progress["value"] = 100
-        self.set_banner("3/3 VERIFIED — all selected files are byte-for-byte identical to the SD originals.", GREEN)
         selected_n = len(manifest["selected_files"])
         excluded_n = manifest["excluded_count"]
+        if self.dropbox.configured():
+            self.set_banner("2/2 LOCAL VERIFIED — safe to remove/clear the SD card. Dropbox is uploading in the background.", GREEN)
+            self.start_dropbox_for_job(manifest["job_id"])
+        else:
+            self.set_banner("2/2 LOCAL VERIFIED — safe to remove/clear the SD card. Dropbox is not connected yet.", GREEN)
 
         if self.delete_var.get():
             yes = messagebox.askyesno(
                 "Safe to clear imported files",
-                f"All {selected_n} selected JPEGs are verified in all 3 backup locations.\n\n"
+                f"All {selected_n} selected JPEGs are byte-for-byte verified in BOTH local backup locations.\n\n"
                 f"Delete ONLY those {selected_n} imported JPEGs from the SD card now?\n"
-                f"{excluded_n} excluded file(s) will remain untouched.",
+                f"{excluded_n} excluded file(s) will remain untouched.\n\n"
+                "Dropbox continues independently from Backup 1 and does not require the SD card.",
                 parent=self,
             )
             if yes:
@@ -705,12 +732,13 @@ class TPSApp(tk.Tk):
                         row["sd_deleted"] = 1
                         row["updated_at"] = __import__("datetime").datetime.now().isoformat()
                         self.storage.upsert_job(row)
-                    messagebox.showinfo("SD card updated", f"{selected_n} imported JPEGs were deleted.\n{excluded_n} excluded file(s) remain on the card.", parent=self)
+                    messagebox.showinfo("SD card updated", f"{selected_n} imported JPEGs were deleted.\n{excluded_n} excluded file(s) remain on the card.\n\nDropbox can continue uploading from the verified primary backup.", parent=self)
                 except Exception as exc:
-                    messagebox.showerror("Could not clear SD card", f"The backups remain safe, but the source files were NOT fully deleted.\n\n{exc}", parent=self)
+                    messagebox.showerror("Could not clear SD card", f"The local backups remain safe, but the source files were NOT fully deleted.\n\n{exc}", parent=self)
                     return
         else:
-            messagebox.showinfo("Backup complete", f"{selected_n} photos verified in 3/3 locations.\n{excluded_n} excluded file(s) were not imported.\n\nSD card originals were retained.", parent=self)
+            cloud_note = "Dropbox upload has started in the background." if self.dropbox.configured() else "Dropbox is not connected; the cloud copy will remain pending until it is configured."
+            messagebox.showinfo("Local backup complete", f"{selected_n} photos verified in 2/2 local locations.\n{excluded_n} excluded file(s) were not imported.\n\nThe SD card originals were retained.\n{cloud_note}", parent=self)
 
     def set_banner(self, text: str, color: str):
         bg = "#E7EEE9" if color == GREEN else "#F4EBDD" if color == ORANGE else "#F3E3E3" if color == RED else "#E3ECF0"
@@ -726,7 +754,7 @@ class TPSApp(tk.Tk):
         head = tk.Frame(page, bg=BG)
         head.grid(row=0, column=0, sticky="ew", padx=34, pady=(25, 14))
         ttk.Label(head, text="Backup History", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(head, text="Verified imports, emergency jobs and Event Log sync status.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
+        ttk.Label(head, text="Verified local backups, Dropbox upload status, emergency jobs and Event Log sync status.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
 
         card = tk.Frame(page, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         card.grid(row=1, column=0, sticky="nsew", padx=34, pady=(0, 24))
@@ -738,11 +766,11 @@ class TPSApp(tk.Tk):
         ttk.Button(bar, text="Complete selected emergency backup", style="Primary.TButton", command=self.complete_selected_emergency).pack(side="left", padx=8)
         ttk.Button(bar, text="Sync Event Log queue", style="Secondary.TButton", command=self.sync_eventlog_queue).pack(side="left")
 
-        cols = ("date", "event", "photographer", "photos", "status", "eventlog", "sd")
+        cols = ("date", "event", "photographer", "photos", "status", "dropbox", "eventlog", "sd")
         self.history_tree = ttk.Treeview(card, columns=cols, show="headings")
         headings = {
             "date": ("Date / time", 150), "event": ("Event", 180), "photographer": ("Photographer", 150),
-            "photos": ("Photos", 80), "status": ("Backup status", 240), "eventlog": ("Event Log", 120), "sd": ("SD cleared", 90)
+            "photos": ("Photos", 80), "status": ("Local backup", 190), "dropbox": ("Dropbox", 125), "eventlog": ("Event Log", 120), "sd": ("SD cleared", 90)
         }
         for c in cols:
             text, width = headings[c]
@@ -756,7 +784,7 @@ class TPSApp(tk.Tk):
         self.history_tree.delete(*self.history_tree.get_children())
         for row in self.storage.list_jobs():
             status = row["status"].replace("_", " ").title()
-            self.history_tree.insert("", "end", iid=row["id"], values=(row["created_at"][:16].replace("T", " "), f"{row['event_name']} {row['event_time']}", row["photographer"], row["selected_count"], status, row["eventlog_status"], "Yes" if row["sd_deleted"] else "No"))
+            self.history_tree.insert("", "end", iid=row["id"], values=(row["created_at"][:16].replace("T", " "), f"{row['event_name']} {row['event_time']}", row["photographer"], row["selected_count"], status, row["backup3_status"].replace("_", " ").title(), row["eventlog_status"], "Yes" if row["sd_deleted"] else "No"))
 
     def complete_selected_emergency(self):
         sel = self.history_tree.selection()
@@ -768,7 +796,7 @@ class TPSApp(tk.Tk):
         if not row or row["emergency_status"] != "verified":
             messagebox.showwarning("Not an emergency job", "The selected job does not have a verified emergency backup.", parent=self)
             return
-        if not messagebox.askyesno("Complete network backup", "Copy this verified emergency backup to all three configured network locations now?", parent=self):
+        if not messagebox.askyesno("Complete network backup", "Copy this verified emergency backup to both configured normal backup locations now?", parent=self):
             return
 
         def cb(ev):
@@ -778,7 +806,7 @@ class TPSApp(tk.Tk):
             windows_keep_awake(True)
             try:
                 self.engine.complete_emergency_to_network(job_id, cb)
-                self.msg_queue.put(("history_done", "Emergency backup completed to all 3 network locations."))
+                self.msg_queue.put(("history_done", "Emergency backup completed to both normal backup locations. Dropbox can now upload in the background."))
             except Exception as exc:
                 self.msg_queue.put(("history_error", str(exc)))
             finally:
@@ -799,7 +827,7 @@ class TPSApp(tk.Tk):
         head = tk.Frame(page, bg=BG)
         head.grid(row=0, column=0, sticky="ew", padx=34, pady=(25, 14))
         ttk.Label(head, text="Admin", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(head, text="Locked backup destinations, emergency storage and system configuration.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
+        ttk.Label(head, text="Locked local backup destinations, Dropbox cloud backup, emergency storage and system configuration.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
 
         canvas = tk.Canvas(page, bg=BG, highlightthickness=0)
         canvas.grid(row=1, column=0, sticky="nsew", padx=34, pady=(0, 24))
@@ -820,8 +848,7 @@ class TPSApp(tk.Tk):
         self.admin_path_vars = {}
         for r, (key, label) in enumerate([
             ("backup1_path", "Backup 1 — PRIMARY / priority"),
-            ("backup2_path", "Backup 2"),
-            ("backup3_path", "Backup 3"),
+            ("backup2_path", "Backup 2 — independent local/filesystem copy"),
             ("emergency_path", "Emergency local backup"),
         ], start=1):
             tk.Label(paths, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=r, column=0, sticky="w", padx=16, pady=7)
@@ -830,24 +857,44 @@ class TPSApp(tk.Tk):
             ttk.Entry(paths, textvariable=var).grid(row=r, column=1, sticky="ew", padx=8, pady=7)
             ttk.Button(paths, text="Browse", style="Secondary.TButton", command=lambda v=var: self.admin_browse(v)).grid(row=r, column=2, padx=(0,16), pady=7)
 
+        cloud = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
+        cloud.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        cloud.grid_columnconfigure(1, weight=1)
+        tk.Label(cloud, text="DROPBOX CLOUD BACKUP", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(14,8))
+        tk.Label(cloud, text="Destination", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=1, column=0, sticky="w", padx=16, pady=7)
+        tk.Label(cloud, text=DROPBOX_DESTINATION, bg=CARD, fg=INK, font=("Segoe UI", 9)).grid(row=1, column=1, columnspan=2, sticky="w", padx=(8,16), pady=7)
+        tk.Label(cloud, text="Fixed in this app — staff cannot change the cloud destination.", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(row=2, column=1, columnspan=2, sticky="w", padx=(8,16), pady=(0,7))
+        tk.Label(cloud, text="Dropbox App key", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=3, column=0, sticky="w", padx=16, pady=7)
+        self.dropbox_app_key_var = tk.StringVar()
+        ttk.Entry(cloud, textvariable=self.dropbox_app_key_var).grid(row=3, column=1, columnspan=2, sticky="ew", padx=(8,16), pady=7)
+        tk.Label(cloud, text="One-time setup: create a Full Dropbox API app with account_info.read, files.metadata.read and files.content.write permissions.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=760, justify="left").grid(row=4, column=1, columnspan=2, sticky="w", padx=(8,16), pady=(0,7))
+        tk.Label(cloud, text="Status", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=5, column=0, sticky="w", padx=16, pady=7)
+        self.dropbox_admin_status = tk.Label(cloud, text="Not connected", bg=CARD, fg=ORANGE, font=("Segoe UI Semibold", 9))
+        self.dropbox_admin_status.grid(row=5, column=1, sticky="w", padx=8, pady=7)
+        dbbtns = tk.Frame(cloud, bg=CARD)
+        dbbtns.grid(row=6, column=0, columnspan=3, sticky="w", padx=16, pady=(5,14))
+        ttk.Button(dbbtns, text="CONNECT DROPBOX", style="Primary.TButton", command=self.admin_connect_dropbox).pack(side="left")
+        ttk.Button(dbbtns, text="Test Dropbox", style="Secondary.TButton", command=self.admin_test_dropbox).pack(side="left", padx=8)
+        ttk.Button(dbbtns, text="Disconnect", style="Secondary.TButton", command=self.admin_disconnect_dropbox).pack(side="left")
+
         syscard = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
-        syscard.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        syscard.grid(row=2, column=0, sticky="ew", pady=(0, 12))
         syscard.grid_columnconfigure(1, weight=1)
-        tk.Label(syscard, text="SYSTEM", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(14,8))
-        tk.Label(syscard, text="Backup 2 + 3 method", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=1, column=0, sticky="w", padx=16, pady=7)
-        self.copy_mode_var = tk.StringVar()
-        ttk.Combobox(syscard, textvariable=self.copy_mode_var, state="readonly", values=["auto", "sequential", "parallel"]).grid(row=1, column=1, sticky="ew", padx=(8,16), pady=7)
-        tk.Label(syscard, text="Event Log import endpoint", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=2, column=0, sticky="w", padx=16, pady=7)
+        tk.Label(syscard, text="EVENT LOG & CARD CLEARING", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(14,8))
+        tk.Label(syscard, text="Event Log API URL", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=1, column=0, sticky="w", padx=16, pady=7)
         self.eventlog_url_var = tk.StringVar()
-        ttk.Entry(syscard, textvariable=self.eventlog_url_var).grid(row=2, column=1, sticky="ew", padx=(8,16), pady=7)
-        tk.Label(syscard, text="Event Log import key", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=3, column=0, sticky="w", padx=16, pady=7)
+        ttk.Entry(syscard, textvariable=self.eventlog_url_var).grid(row=1, column=1, sticky="ew", padx=(8,16), pady=7)
+        tk.Label(syscard, text="Where completed event records are sent. Leave blank for now and records remain safely queued locally.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=760, justify="left").grid(row=2, column=1, sticky="w", padx=(8,16), pady=(0,7))
+        tk.Label(syscard, text="Event Log API key", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=3, column=0, sticky="w", padx=16, pady=7)
         self.eventlog_key_var = tk.StringVar()
         ttk.Entry(syscard, textvariable=self.eventlog_key_var, show="•").grid(row=3, column=1, sticky="ew", padx=(8,16), pady=7)
+        tk.Label(syscard, text="Security key used by Event Log to accept imports. Leave blank until the Event Log endpoint is enabled.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=760, justify="left").grid(row=4, column=1, sticky="w", padx=(8,16), pady=(0,7))
         self.admin_delete_default_var = tk.BooleanVar()
-        ttk.Checkbutton(syscard, text="Default 'delete imported files after verification' to ON", variable=self.admin_delete_default_var).grid(row=4, column=0, columnspan=2, sticky="w", padx=16, pady=(7,14))
+        ttk.Checkbutton(syscard, text="Pre-select 'Delete imported SD files after 2 local backups are verified'", variable=self.admin_delete_default_var).grid(row=5, column=0, columnspan=2, sticky="w", padx=16, pady=(7,4))
+        tk.Label(syscard, text="Even when pre-selected, staff still receive a final confirmation. Dropbox is not required before the SD card can be cleared.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=800, justify="left").grid(row=6, column=0, columnspan=2, sticky="w", padx=16, pady=(0,14))
 
         people = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
-        people.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        people.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         people.grid_columnconfigure(0, weight=1)
         tk.Label(people, text="PHOTOGRAPHERS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14,8))
         self.people_tree = ttk.Treeview(people, columns=("name","initials"), show="headings", height=7)
@@ -863,7 +910,7 @@ class TPSApp(tk.Tk):
         ttk.Button(pb, text="Remove", style="Secondary.TButton", command=self.admin_remove_person).pack(side="left")
 
         events = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
-        events.grid(row=3, column=0, sticky="ew", pady=(0, 12))
+        events.grid(row=4, column=0, sticky="ew", pady=(0, 12))
         events.grid_columnconfigure(0, weight=1)
         tk.Label(events, text="EVENT TYPES", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14,8))
         self.events_tree = ttk.Treeview(events, columns=("name","code","times","guests"), show="headings", height=7)
@@ -877,7 +924,7 @@ class TPSApp(tk.Tk):
         ttk.Button(eb, text="Remove", style="Secondary.TButton", command=self.admin_remove_event).pack(side="left")
 
         savebar = tk.Frame(inner, bg=BG)
-        savebar.grid(row=4, column=0, sticky="ew", pady=(2, 20))
+        savebar.grid(row=5, column=0, sticky="ew", pady=(2, 20))
         ttk.Button(savebar, text="Test connections", style="Secondary.TButton", command=self.admin_test_locations).pack(side="left")
         ttk.Button(savebar, text="Run speed test", style="Secondary.TButton", command=self.admin_speed_test).pack(side="left", padx=8)
         ttk.Button(savebar, text="SAVE ADMIN SETTINGS", style="Primary.TButton", command=self.save_admin_settings).pack(side="right")
@@ -890,13 +937,15 @@ class TPSApp(tk.Tk):
     def load_admin_settings(self):
         for key, var in getattr(self, "admin_path_vars", {}).items():
             var.set(self.storage.get_setting(key, ""))
-        if hasattr(self, "copy_mode_var"):
-            self.copy_mode_var.set(self.storage.get_setting("secondary_copy_mode", "auto"))
+        if hasattr(self, "eventlog_url_var"):
             self.eventlog_url_var.set(self.storage.get_setting("eventlog_url", ""))
             self.eventlog_key_var.set(self.storage.get_setting("eventlog_api_key", ""))
             self.admin_delete_default_var.set(bool(self.storage.get_setting("delete_after_verified_default", False)))
+            self.dropbox_app_key_var.set(self.storage.get_setting("dropbox_app_key", ""))
+            self.refresh_dropbox_admin_status()
             self.refresh_admin_people()
             self.refresh_admin_events()
+
     def refresh_admin_people(self):
         self.people_tree.delete(*self.people_tree.get_children())
         for i, p in enumerate(self.storage.get_setting("photographers", [])):
@@ -949,59 +998,3 @@ class TPSApp(tk.Tk):
     def admin_add_event(self):
         e = self._event_dialog()
         if not e: return
-        events = self.storage.get_setting("events", []); events.append(e); self.storage.set_setting("events", events); self.refresh_admin_events()
-
-    def admin_edit_event(self):
-        sel = self.events_tree.selection()
-        if not sel: return
-        idx = int(sel[0]); events = self.storage.get_setting("events", [])
-        e = self._event_dialog(events[idx])
-        if not e: return
-        events[idx] = e; self.storage.set_setting("events", events); self.refresh_admin_events()
-
-    def admin_remove_event(self):
-        sel = self.events_tree.selection()
-        if not sel: return
-        events = self.storage.get_setting("events", []); del events[int(sel[0])]; self.storage.set_setting("events", events); self.refresh_admin_events()
-
-    def save_admin_settings(self, show_message: bool = True):
-        for key, var in self.admin_path_vars.items():
-            self.storage.set_setting(key, var.get().strip())
-        self.storage.set_setting("secondary_copy_mode", self.copy_mode_var.get())
-        self.storage.set_setting("eventlog_url", self.eventlog_url_var.get().strip())
-        self.storage.set_setting("eventlog_api_key", self.eventlog_key_var.get().strip())
-        self.storage.set_setting("delete_after_verified_default", bool(self.admin_delete_default_var.get()))
-        self.delete_var.set(bool(self.admin_delete_default_var.get()))
-        self.load_reference_data()
-        if show_message:
-            messagebox.showinfo("Admin settings", "Settings saved. Staff cannot edit the configured backup locations from the Import screen.", parent=self)
-
-    def admin_test_locations(self):
-        self.save_admin_settings(show_message=False)
-        checks = self.engine.preflight_all(1024 * 1024)
-        lines = []
-        for key in ("backup1","backup2","backup3"):
-            ok, msg, free = checks[key]
-            lines.append(f"{key.upper()}: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
-        epath = self.storage.get_setting("emergency_path", "")
-        ok, msg, free = self.engine.preflight_path(epath, 1024 * 1024)
-        lines.append(f"EMERGENCY: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
-        messagebox.showinfo("Backup location test", "\n".join(lines), parent=self)
-
-    def admin_speed_test(self):
-        self.save_admin_settings(show_message=False)
-        if not messagebox.askyesno("Backup speed test", "Write and read a temporary 32 MB test file on each configured location?\n\nNo photo files are changed.", parent=self):
-            return
-        lines = []
-        for label, key in [("Backup 1", "backup1_path"), ("Backup 2", "backup2_path"), ("Backup 3", "backup3_path"), ("Emergency", "emergency_path")]:
-            raw = self.storage.get_setting(key, "")
-            ok, msg, write_mbps, read_mbps = self.engine.benchmark_path(raw, 32)
-            if ok:
-                lines.append(f"{label}: write {write_mbps:.1f} MB/s • read {read_mbps:.1f} MB/s")
-            else:
-                lines.append(f"{label}: FAILED — {msg}")
-        messagebox.showinfo("Backup speed test", "\n".join(lines), parent=self)
-
-    def on_close(self):
-        if messagebox.askokcancel("Exit TPS Photo Import", "Exit the application?", parent=self):
-            self.destroy()
