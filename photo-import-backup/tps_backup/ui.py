@@ -192,7 +192,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.1.0\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text="VERSION 1.1.2\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
