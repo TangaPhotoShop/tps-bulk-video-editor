@@ -1,37 +1,71 @@
 name: Build TPS Photo Import Backup Windows
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - photo-import-backup-build-20261008
-  workflow_dispatch:
+    paths:
+      - 'photo-import-backup/**'
+      - '.github/workflows/photo-import-backup-build.yml'
 
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: photo-import-backup
+
     steps:
       - uses: actions/checkout@v4
-
-      - name: Reassemble source package
-        shell: pwsh
-        run: |
-          $parts = Get-ChildItem build-source/source.part*.b64 | Sort-Object Name
-          if (-not $parts) { throw "Source chunks not found" }
-          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ""
-          [IO.File]::WriteAllBytes("source.zip", [Convert]::FromBase64String($b64))
-          New-Item -ItemType Directory -Path photo-import-backup -Force | Out-Null
-          Expand-Archive source.zip -DestinationPath photo-import-backup -Force
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install build dependencies
-        working-directory: photo-import-backup
         run: python -m pip install -r requirements.txt
 
-      - name: Build portable EXE
-        working-directory: photo-import-backup
+      - name: Generate TPS app artwork
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path assets -Force | Out-Null
+          @'
+          from PIL import Image, ImageDraw, ImageFont
+
+          S = 1024
+          im = Image.new("RGBA", (S, S), (7, 63, 73, 255))
+          d = ImageDraw.Draw(im)
+          # soft inner plate
+          d.rounded_rectangle((90, 90, 934, 934), radius=170, fill=(10, 88, 101, 255), outline=(255,255,255,220), width=18)
+          # camera body
+          d.rounded_rectangle((220, 320, 804, 715), radius=80, fill=(255,255,255,255))
+          d.rounded_rectangle((335, 255, 540, 355), radius=35, fill=(255,255,255,255))
+          # lens
+          d.ellipse((360, 385, 665, 690), fill=(7,63,73,255))
+          d.ellipse((415, 440, 610, 635), fill=(242, 147, 64, 255))
+          d.ellipse((465, 490, 560, 585), fill=(255,255,255,235))
+          # three-copy motif
+          for y, alpha in [(760,255),(805,205),(850,155)]:
+              d.rounded_rectangle((335, y, 690, y+34), radius=15, fill=(255,255,255,alpha))
+          # small TPS plate
+          d.rounded_rectangle((430, 900, 595, 955), radius=18, fill=(255,255,255,235))
+          try:
+              font = ImageFont.truetype("arialbd.ttf", 30)
+          except Exception:
+              font = ImageFont.load_default()
+          d.text((470, 910), "TPS", fill=(7,63,73,255), font=font)
+          im.save("assets/tps_photo_backup_1024.png")
+          im.resize((256,256), Image.Resampling.LANCZOS).save("assets/tps_photo_backup.png")
+          im.save("assets/tps_photo_backup.ico", sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          im.save("assets/favicon.ico", sizes=[(16,16),(32,32),(48,48)])
+          '@ | Set-Content -Encoding UTF8 make_icon.py
+          python make_icon.py
+
+      - name: Validate Python source
+        run: python -m py_compile main.py tps_backup\backup_engine.py tps_backup\eventlog.py tps_backup\storage.py tps_backup\ui.py
+
+      - name: Build standalone EXE
         shell: pwsh
         run: |
           python -m PyInstaller --noconfirm --clean --onefile --windowed `
@@ -40,12 +74,13 @@ jobs:
             --add-data "assets;assets" `
             main.py
 
-      - name: Build Windows installer
-        working-directory: photo-import-backup
+      - name: Install Inno Setup
         shell: pwsh
-        run: |
-          choco install innosetup --yes --no-progress
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss'
 
       - uses: actions/upload-artifact@v4
         with:
@@ -53,3 +88,4 @@ jobs:
           path: |
             photo-import-backup/dist/TPS Photo Import & Backup.exe
             photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.0.0.exe
+          if-no-files-found: error
