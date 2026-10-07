@@ -112,3 +112,5 @@ jobs:
             photo-import-backup/dist/TPS Photo Import & Backup.exe
             photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.2.exe
           if-no-files-found: error
+
+# v1.1.2 rebuild after UI newline repair
