@@ -106,7 +106,7 @@ jobs:
         shell: pwsh
         run: |
           python -m py_compile main.py tps_backup\backup_engine.py tps_backup\dropbox_client.py tps_backup\eventlog.py tps_backup\storage.py tps_backup\ui.py
-          python -c "from tps_backup.ui import TPSApp, windows_camera_sd_candidates; required=['on_close','save_admin_settings','admin_connect_dropbox','start_pending_dropbox_sync','admin_add_event','monitor_sd_cards','sort_history_by','clear_history_filters','start_thumbnail_generation','apply_thumbnail','auto_sync_eventlog_queue','admin_test_eventlog']; missing=[x for x in required if not hasattr(TPSApp,x)]; assert not missing, f'Missing UI methods: {missing}'; assert callable(windows_camera_sd_candidates); print('Source UI/SD detection smoke check OK')"
+          python -c "from tps_backup.ui import TPSApp, windows_camera_sd_candidates; required=['on_close','save_admin_settings','admin_connect_dropbox','start_pending_dropbox_sync','admin_add_event','monitor_sd_cards','sort_history_by','clear_history_filters','start_thumbnail_generation','apply_thumbnail','auto_sync_eventlog_queue','admin_test_eventlog','_on_mousewheel','on_issue_change']; missing=[x for x in required if not hasattr(TPSApp,x)]; assert not missing, f'Missing UI methods: {missing}'; assert callable(windows_camera_sd_candidates); print('Source UI/SD detection smoke check OK')"
           python -c "import dropbox; print('Dropbox SDK', dropbox.__version__)"
           python -c "from tps_backup.eventlog import EventLogClient; from tps_backup.storage import Storage; ok,msg=EventLogClient(Storage()).test_connection(); print('Event Log API:', ok, msg); assert ok"
           python -c "import compileall; assert compileall.compile_dir('.', quiet=1); from tps_backup.ui import TPSApp; assert hasattr(TPSApp,'on_close'); print('FINAL SOURCE VALIDATION OK')"
@@ -168,10 +168,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TPS-Photo-Import-Backup-Windows-v1.2.0
+          name: TPS-Photo-Import-Backup-Windows-v1.2.1
           path: |
             photo-import-backup/dist/TPS Photo Import & Backup.exe
-            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.2.0.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.2.1.exe
           if-no-files-found: error
 
-# v1.2.0 live Event Log integration
+# v1.2.1 version label + mouse scrolling + Event Log issue parity
