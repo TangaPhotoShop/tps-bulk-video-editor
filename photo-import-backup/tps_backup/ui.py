@@ -897,7 +897,6 @@ class TPSApp(tk.Tk):
             self.admin_delete_default_var.set(bool(self.storage.get_setting("delete_after_verified_default", False)))
             self.refresh_admin_people()
             self.refresh_admin_events()
-
     def refresh_admin_people(self):
         self.people_tree.delete(*self.people_tree.get_children())
         for i, p in enumerate(self.storage.get_setting("photographers", [])):
@@ -998,3 +997,11 @@ class TPSApp(tk.Tk):
             raw = self.storage.get_setting(key, "")
             ok, msg, write_mbps, read_mbps = self.engine.benchmark_path(raw, 32)
             if ok:
+                lines.append(f"{label}: write {write_mbps:.1f} MB/s • read {read_mbps:.1f} MB/s")
+            else:
+                lines.append(f"{label}: FAILED — {msg}")
+        messagebox.showinfo("Backup speed test", "\n".join(lines), parent=self)
+
+    def on_close(self):
+        if messagebox.askokcancel("Exit TPS Photo Import", "Exit the application?", parent=self):
+            self.destroy()
