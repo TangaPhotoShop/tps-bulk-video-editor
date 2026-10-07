@@ -1,5 +1,5 @@
 #define MyAppName "TPS Photo Import & Backup"
-#define MyAppVersion "1.1.3"
+#define MyAppVersion "1.1.4"
 #define MyAppPublisher "Tangalooma Photo Shop"
 #define MyAppExeName "TPS Photo Import & Backup.exe"
 
