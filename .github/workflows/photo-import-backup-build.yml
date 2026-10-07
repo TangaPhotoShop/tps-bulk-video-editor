@@ -141,4 +141,4 @@ jobs:
             photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.4.exe
           if-no-files-found: error
 
-# v1.1.4 larger preview + ATV bike count
+# v1.1.4 larger preview + ATV bike count - repaired
