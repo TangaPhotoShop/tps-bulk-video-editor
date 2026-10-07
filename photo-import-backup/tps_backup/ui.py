@@ -195,7 +195,7 @@ class TPSApp(tk.Tk):
             self.nav_buttons[key] = b
 
         tk.Frame(self.nav, bg=NAV).pack(expand=True, fill="both")
-        tk.Label(self.nav, text="VERSION 1.1.3\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
+        tk.Label(self.nav, text="VERSION 1.1.4\nWindows desktop edition\n2 local verified • Dropbox cloud • Offline-safe", bg=NAV, fg="#8FA6AD", justify="left", font=("Segoe UI", 8)).pack(anchor="w", padx=22, pady=20)
 
         self.pages = {}
         for key in ("import", "history", "admin"):
@@ -285,7 +285,7 @@ class TPSApp(tk.Tk):
         tk.Label(event, text="Event time", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(row=3, column=0, sticky="w", padx=18)
         self.time_combo = ttk.Combobox(event, textvariable=self.time_var, state="normal", width=16)
         self.time_combo.grid(row=4, column=0, columnspan=2, sticky="ew", padx=(18, 8), pady=(2, 14))
-        tk.Label(event, text="Number of guests", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(row=3, column=2, sticky="w", padx=8)
+        self.quantity_label = tk.Label(event, text="Number of guests", bg=CARD, fg=MUTED, font=("Segoe UI", 8))\n        self.quantity_label.grid(row=3, column=2, sticky="w", padx=8)
         ttk.Entry(event, textvariable=self.guests_var, width=14).grid(row=4, column=2, columnspan=2, sticky="ew", padx=8, pady=(2, 14))
         tk.Label(event, text="Anything to report?", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(row=3, column=4, sticky="w", padx=8)
         ttk.Combobox(event, textvariable=self.issue_var, state="readonly", values=["No issues", "Photography issue", "Equipment issue", "Guest / operational issue", "Other"], width=20).grid(row=4, column=4, columnspan=2, sticky="ew", padx=8, pady=(2, 14))
@@ -351,14 +351,14 @@ class TPSApp(tk.Tk):
         right = tk.Frame(body, bg=BG)
         right.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
         right.grid_columnconfigure(0, weight=1)
-        right.grid_rowconfigure(0, weight=1)
+        right.grid_rowconfigure(0, weight=1, minsize=330)
 
         preview = tk.Frame(right, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         preview.grid(row=0, column=0, sticky="nsew", pady=(0, 12))
         preview.grid_columnconfigure(0, weight=1)
         preview.grid_rowconfigure(1, weight=1)
         tk.Label(preview, text="PREVIEW", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
-        self.preview_canvas = tk.Canvas(preview, bg="#1C252A", highlightthickness=0)
+        self.preview_canvas = tk.Canvas(preview, bg="#1C252A", highlightthickness=0, height=330)
         self.preview_canvas.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 10))
         self.preview_canvas.bind("<Configure>", self._on_preview_resize)
         self.preview_canvas.create_text(10, 10, anchor="nw", text="Select a photo to preview", fill="#9AA7AC", font=("Segoe UI", 10))
@@ -432,6 +432,8 @@ class TPSApp(tk.Tk):
                     self.time_var.set(e["times"][0])
                 elif not self.time_var.get():
                     self.time_var.set("")
+                if hasattr(self, "quantity_label"):
+                    self.quantity_label.configure(text="Number of bikes" if e.get("code", "").upper() == "ATV" else "Number of guests")
                 break
 
     def update_folder_preview(self):
@@ -615,13 +617,13 @@ class TPSApp(tk.Tk):
             return "Enter an event time."
         ev = self.current_event()
         if ev.get("guests_required") and not self.guests_var.get().strip():
-            return "Number of guests is required for this event."
+            return "Number of bikes is required for ATV Quad Bikes." if ev.get("code", "").upper() == "ATV" else "Number of guests is required for this event."
         if self.guests_var.get().strip():
             try:
                 if int(self.guests_var.get()) < 0:
                     raise ValueError
             except ValueError:
-                return "Number of guests must be a whole number."
+                return "Number of bikes must be a whole number." if ev.get("code", "").upper() == "ATV" else "Number of guests must be a whole number."
         return None
 
     def build_spec(self) -> BackupJobSpec:
