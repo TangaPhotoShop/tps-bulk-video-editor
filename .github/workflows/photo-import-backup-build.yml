@@ -1,10 +1,75 @@
 name: Build TPS Photo Import Backup Windows
 
 on:
+  push:
+    branches:
+      - photo-import-backup-build-20261008
+    paths:
+      - '.github/workflows/photo-import-backup-build.yml'
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: photo-import-backup
+
     steps:
-      - run: echo "Build workflow temporarily paused while v1.1.0 source is updated."
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Create orange TPS Photo Import app icon
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path assets -Force | Out-Null
+          $b64 = Get-Content "assets\orange_icon_512.png.b64" -Raw
+          [IO.File]::WriteAllBytes("assets\orange_icon_512.png", [Convert]::FromBase64String($b64))
+          @'
+          from PIL import Image
+          from pathlib import Path
+          p = Path("assets/orange_icon_512.png")
+          im = Image.open(p).convert("RGBA")
+          im.resize((256,256), Image.Resampling.LANCZOS).save("assets/tps_photo_backup.png")
+          im.save("assets/tps_photo_backup.ico", sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
+          im.save("assets/favicon.ico", sizes=[(16,16),(32,32),(48,48)])
+          '@ | Set-Content -Encoding UTF8 make_icon.py
+          python make_icon.py
+
+      - name: Validate source
+        shell: pwsh
+        run: |
+          python -m py_compile main.py tps_backup\backup_engine.py tps_backup\dropbox_client.py tps_backup\eventlog.py tps_backup\storage.py tps_backup\ui.py
+          python -c "import dropbox; print('Dropbox SDK', dropbox.__version__)"
+
+      - name: Build standalone EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller --noconfirm --clean --onefile --windowed `
+            --name "TPS Photo Import & Backup" `
+            --icon "assets\tps_photo_backup.ico" `
+            --add-data "assets;assets" `
+            --collect-all dropbox `
+            main.py
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build Windows installer
+        shell: pwsh
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TPS-Photo-Import-Backup-Windows-v1.1.0
+          path: |
+            photo-import-backup/dist/TPS Photo Import & Backup.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.0.exe
+          if-no-files-found: error
