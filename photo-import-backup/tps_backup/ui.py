@@ -397,11 +397,31 @@ class TPSApp(tk.Tk):
         self.quantity_label.grid(row=3, column=2, sticky="w", padx=8)
         ttk.Entry(event, textvariable=self.guests_var, width=14).grid(row=4, column=2, columnspan=2, sticky="ew", padx=8, pady=(2, 14))
         tk.Label(event, text="Anything to report?", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(row=3, column=4, sticky="w", padx=8)
-        ttk.Combobox(event, textvariable=self.issue_var, state="readonly", values=["No issues", "Photography issue", "Equipment issue", "Guest / operational issue", "Other"], width=20).grid(row=4, column=4, columnspan=2, sticky="ew", padx=8, pady=(2, 14))
-        tk.Label(event, text="Notes / issue details (optional)", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(row=3, column=6, sticky="w", padx=8)
-        ttk.Entry(event, textvariable=self.notes_var).grid(row=4, column=6, columnspan=2, sticky="ew", padx=(8, 18), pady=(2, 14))
+        self.issue_combo = ttk.Combobox(
+            event,
+            textvariable=self.issue_var,
+            state="readonly",
+            values=[
+                "No issues",
+                "Camera issue",
+                "Lens issue",
+                "Flash issue",
+                "Battery issue",
+                "Memory card issue",
+                "Radio / communications issue",
+                "Other issue",
+            ],
+            width=24,
+        )
+        self.issue_combo.grid(row=4, column=4, columnspan=2, sticky="ew", padx=8, pady=(2, 14))
+        self.issue_combo.bind("<<ComboboxSelected>>", lambda e: self.on_issue_change())
+        self.notes_label = tk.Label(event, text="Notes (optional)", bg=CARD, fg=MUTED, font=("Segoe UI", 8))
+        self.notes_label.grid(row=3, column=6, sticky="w", padx=8)
+        self.notes_entry = ttk.Entry(event, textvariable=self.notes_var)
+        self.notes_entry.grid(row=4, column=6, columnspan=2, sticky="ew", padx=(8, 18), pady=(2, 14))
 
         self.load_reference_data()
+        self.on_issue_change()
 
         # Photo card left
         photos_card = tk.Frame(body, bg=CARD, highlightbackground=LINE, highlightthickness=1)
@@ -552,6 +572,16 @@ class TPSApp(tk.Tk):
                 if hasattr(self, "quantity_label"):
                     self.quantity_label.configure(text="Number of bikes" if e.get("code", "").upper() == "ATV" else "Number of guests")
                 break
+
+    def on_issue_change(self):
+        has_issue = self.issue_var.get().strip() != "No issues"
+        if hasattr(self, "notes_label"):
+            self.notes_label.configure(
+                text="Issue details (required)" if has_issue else "Notes (optional)",
+                fg=RED if has_issue else MUTED,
+            )
+        if has_issue and hasattr(self, "notes_entry"):
+            self.notes_entry.focus_set()
 
     def update_folder_preview(self):
         try:
@@ -820,6 +850,8 @@ class TPSApp(tk.Tk):
                     raise ValueError
             except ValueError:
                 return "Number of bikes must be a whole number." if ev.get("code", "").upper() == "ATV" else "Number of guests must be a whole number."
+        if self.issue_var.get().strip() != "No issues" and not self.notes_var.get().strip():
+            return f"Please enter details for the selected issue: {self.issue_var.get().strip()}."
         return None
 
     def build_spec(self) -> BackupJobSpec:
