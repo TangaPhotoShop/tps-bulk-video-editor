@@ -236,6 +236,7 @@ class TPSApp(tk.Tk):
         self.bind_all("<MouseWheel>", self._on_mousewheel, add="+")
         self.after(300, self.poll_queue)
         self.after(700, lambda: self.monitor_sd_cards(initial=True))
+        self.after(1000, self.auto_check_connections_on_load)
         self.after(1800, self.start_pending_dropbox_sync)
         self.after(2600, self.auto_sync_eventlog_queue)
 
@@ -914,6 +915,121 @@ class TPSApp(tk.Tk):
             delete_after_verified=(self.delete_var.get() and False),  # deletion confirmation happens after 2/2 local completion in UI
         )
 
+    def confirm_backup_details(self) -> bool:
+        """Final human check of all manually entered event details before copying starts."""
+        ev = self.current_event()
+        selected = [p for p in getattr(self, "photos", []) if p.selected]
+        excluded = len(getattr(self, "photos", [])) - len(selected)
+        is_atv = str(ev.get("code", "")).upper() == "ATV"
+        quantity_label = "Number of bikes" if is_atv else "Number of guests"
+        quantity_value = self.guests_var.get().strip() or "Not entered"
+        notes = self.notes_var.get().strip() or "None"
+        issue = self.issue_var.get().strip() or "No issues"
+
+        summary = (
+            "Please confirm these event details before the backup starts:\n\n"
+            f"Date: {self.date_var.get().strip()}\n"
+            f"Photographer: {self.photographer_var.get().strip()} ({self.initials_var.get().strip()})\n"
+            f"Event: {self.event_var.get().strip()}\n"
+            f"Event time: {self.time_var.get().strip()}\n"
+            f"{quantity_label}: {quantity_value}\n"
+            f"Issue: {issue}\n"
+            f"Issue / notes: {notes}\n\n"
+            f"Photos selected: {len(selected)}\n"
+            f"Photos excluded: {excluded}\n"
+            f"Delete imported SD files after verification: {'Yes — final confirmation will still be required' if self.delete_var.get() else 'No'}\n\n"
+            "Are these details correct and ready to back up?"
+        )
+        return messagebox.askyesno("Confirm event details", summary, parent=self, icon="question")
+
+    def auto_check_connections_on_load(self):
+        """Check local backups, Dropbox and Event Log on startup without freezing the UI."""
+        if self.backup_in_progress:
+            return
+
+        if hasattr(self, "backup_status_labels"):
+            self.backup_status_labels[1].configure(text="Checking…", fg=BLUE)
+            self.backup_status_labels[2].configure(text="Checking…", fg=BLUE)
+            self.backup_status_labels[3].configure(text="Checking Dropbox…", fg=BLUE)
+        if hasattr(self, "eventlog_admin_status"):
+            self.eventlog_admin_status.configure(text="Checking…", fg=BLUE)
+
+        def worker():
+            try:
+                checks = self.engine.preflight_all(max(self.selected_bytes(), 1))
+            except Exception as exc:
+                checks = {
+                    "backup1": (False, str(exc), 0),
+                    "backup2": (False, str(exc), 0),
+                }
+
+            if self.dropbox.configured():
+                try:
+                    dropbox_ok, dropbox_msg = self.dropbox.test_connection()
+                except Exception as exc:
+                    dropbox_ok, dropbox_msg = False, str(exc)
+            else:
+                dropbox_ok, dropbox_msg = False, "Not connected"
+
+            try:
+                eventlog_ok, eventlog_msg = self.engine.eventlog.test_connection()
+            except Exception as exc:
+                eventlog_ok, eventlog_msg = False, str(exc)
+
+            self.msg_queue.put((
+                "startup_connections",
+                (checks, dropbox_ok, dropbox_msg, eventlog_ok, eventlog_msg),
+            ))
+
+        threading.Thread(target=worker, daemon=True, name="TPSStartupConnectionCheck").start()
+
+    def apply_startup_connection_results(self, payload):
+        checks, dropbox_ok, dropbox_msg, eventlog_ok, eventlog_msg = payload
+        local_ok = True
+        for i, key in enumerate(("backup1", "backup2"), start=1):
+            ok, msg, free = checks.get(key, (False, "Not available", 0))
+            local_ok = local_ok and bool(ok)
+            if hasattr(self, "backup_status_labels"):
+                self.backup_status_labels[i].configure(
+                    text=(f"Ready • {human_bytes(free)} free" if ok else msg),
+                    fg=(GREEN if ok else RED),
+                )
+
+        if hasattr(self, "backup_status_labels"):
+            if dropbox_ok:
+                self.backup_status_labels[3].configure(
+                    text="Connected ✓ • uploads after 2/2 local verification",
+                    fg=GREEN,
+                )
+            elif self.dropbox.configured():
+                self.backup_status_labels[3].configure(
+                    text=f"Dropbox issue • {dropbox_msg}",
+                    fg=ORANGE,
+                )
+            else:
+                self.backup_status_labels[3].configure(
+                    text="Not connected • cloud backups remain pending",
+                    fg=ORANGE,
+                )
+
+        if hasattr(self, "eventlog_admin_status"):
+            self.eventlog_admin_status.configure(
+                text=("Connected and authorised ✓" if eventlog_ok else f"Connection issue • {eventlog_msg}"),
+                fg=(GREEN if eventlog_ok else RED),
+            )
+
+        if hasattr(self, "emergency_btn"):
+            self.emergency_btn.state(["disabled"] if local_ok else ["!disabled"])
+
+        # Do not overwrite an SD-card detection/result message if the user has already inserted a card.
+        if not self.source_var.get().strip():
+            if local_ok:
+                cloud_note = "Dropbox connected" if dropbox_ok else "Dropbox pending/not connected"
+                event_note = "Event Log connected" if eventlog_ok else "Event Log will retry"
+                self.set_banner(f"Connections checked ✓ — local backups ready • {cloud_note} • {event_note}. Insert an SD card.", GREEN)
+            else:
+                self.set_banner("Connection check found a local backup problem — Emergency Local Backup is available.", RED)
+
     def start_backup(self, emergency: bool):
         err = self.validate_event_form()
         if err:
@@ -923,6 +1039,8 @@ class TPSApp(tk.Tk):
             if not messagebox.askyesno("Emergency local backup", "Use the admin-configured emergency local backup?\n\nThe SD card will NOT be deleted and the job will remain Network Backup Pending.", parent=self):
                 return
         else:
+            if not self.confirm_backup_details():
+                return
             if not self.check_network():
                 messagebox.showerror("Network backup unavailable", "At least one required local/filesystem backup location is unavailable.\n\nUse Emergency Local Backup instead. The SD card will not be deleted.", parent=self)
                 return
@@ -962,6 +1080,8 @@ class TPSApp(tk.Tk):
                 kind, payload = self.msg_queue.get_nowait()
                 if kind == "thumbnail_ready":
                     self.apply_thumbnail(payload)
+                elif kind == "startup_connections":
+                    self.apply_startup_connection_results(payload)
                 elif kind == "progress":
                     self.handle_progress(payload)
                 elif kind == "done":
