@@ -173,4 +173,4 @@ jobs:
             photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.1.7.exe
           if-no-files-found: error
 
-# v1.1.7 thumbnails + sharp SD-card icon
+# v1.1.7 thumbnails + sharp SD-card icon + packaged self-test
