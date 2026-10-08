@@ -975,18 +975,31 @@ class BackupEngine:
         files = manifest.get("selected_files", [])
         if not files:
             raise BackupError("SD deletion blocked: no verified files in manifest")
-        for key in ("backup1", "backup2"):
-            info = manifest.get("backups", {}).get(key, {})
-            if info.get("status") != "verified":
-                raise BackupError(f"SD deletion blocked: {key} is not verified")
-            folder = Path(info.get("path", ""))
-            if not folder.exists():
-                raise BackupError(f"SD deletion blocked: connection lost to {key}")
-            self._verify_folder_count(folder, len(files))
-            for item in files:
-                p = folder / item["renamed"]
-                if not p.exists() or p.stat().st_size != item["size"]:
-                    raise BackupError(f"SD deletion blocked: {key} file missing or wrong size: {item['renamed']}")
+
+        if manifest.get("backup_mode") == "auto_correct":
+            backups = manifest.get("backups", {})
+            for key in ("backup2", "staging"):
+                info = backups.get(key, {})
+                if info.get("status") != "verified":
+                    raise BackupError(f"SD deletion blocked: {key} originals are not verified")
+                folder = Path(info.get("path", ""))
+                if not folder.exists():
+                    raise BackupError(f"SD deletion blocked: connection lost to {key}")
+                self._verify_manifest_files(folder, files)
+                self._verify_folder_count(folder, len(files))
+            if path_network_identity(Path(backups["backup2"]["path"])) == path_network_identity(Path(backups["staging"]["path"])):
+                raise BackupError("SD deletion blocked: the two exact original copies are on the same drive/share")
+        else:
+            for key in ("backup1", "backup2"):
+                info = manifest.get("backups", {}).get(key, {})
+                if info.get("status") != "verified":
+                    raise BackupError(f"SD deletion blocked: {key} is not verified")
+                folder = Path(info.get("path", ""))
+                if not folder.exists():
+                    raise BackupError(f"SD deletion blocked: connection lost to {key}")
+                self._verify_manifest_files(folder, files)
+                self._verify_folder_count(folder, len(files))
+
         self._delete_selected_originals(manifest)
 
     def _delete_selected_originals(self, manifest: dict[str, Any]) -> None:
