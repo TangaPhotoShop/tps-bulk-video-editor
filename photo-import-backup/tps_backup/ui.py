@@ -33,6 +33,7 @@ from .backup_engine import (
 from . import __version__ as APP_VERSION
 from .storage import Storage
 from .dropbox_client import DropboxBackupClient, DROPBOX_DESTINATION, DropboxBackupError, DropboxUploadPaused
+from .reference_sync import ReferenceDataClient, ReferenceSyncError, ReferenceSyncConflict
 
 BG = "#EEF3F4"
 CARD = "#FFFFFF"
@@ -201,6 +202,8 @@ class TPSApp(tk.Tk):
         self.storage = Storage()
         self.engine = BackupEngine(self.storage)
         self.dropbox = DropboxBackupClient(self.storage)
+        self.reference_sync = ReferenceDataClient(self.storage)
+        self.reference_sync_busy = False
         self.dropbox_thread = None
         self.dropbox_stop_event = threading.Event()
         self.dropbox_current_job_id = None
@@ -240,6 +243,7 @@ class TPSApp(tk.Tk):
         self.after(300, self.poll_queue)
         self.after(700, lambda: self.monitor_sd_cards(initial=True))
         self.after(1000, self.auto_check_connections_on_load)
+        self.after(1350, self.auto_sync_reference_data)
         self.after(1800, self.start_pending_dropbox_sync)
         self.after(2600, self.auto_sync_eventlog_queue)
 
@@ -618,15 +622,23 @@ class TPSApp(tk.Tk):
         self.backup_name_labels[3].configure(text=f"Dropbox — {db_name}")
 
     def load_reference_data(self):
+        """Refresh shared dropdown choices without auto-filling a new event form."""
         photographers = self.storage.get_setting("photographers", [])
         events = self.storage.get_setting("events", [])
-        self.photographer_combo["values"] = [p["name"] for p in photographers]
-        self.event_combo["values"] = [e["name"] for e in events]
-        if photographers and not self.photographer_var.get():
-            self.photographer_var.set(photographers[0]["name"])
-            self.on_photographer_change()
-        if events and not self.event_var.get():
-            self.event_var.set(events[0]["name"])
+        photographer_names = [p["name"] for p in photographers]
+        event_names = [e["name"] for e in events]
+        self.photographer_combo["values"] = photographer_names
+        self.event_combo["values"] = event_names
+
+        # Keep a current selection only while it still exists in the shared list.
+        # Never choose the first person/event automatically: after an import reset
+        # the next photographer must intentionally select their own details.
+        if self.photographer_var.get() and self.photographer_var.get() not in photographer_names:
+            self.photographer_var.set("")
+            self.initials_var.set("")
+        if self.event_var.get() and self.event_var.get() not in event_names:
+            self.event_var.set("")
+            self.time_var.set("")
             self.on_event_change()
 
     def on_photographer_change(self):
