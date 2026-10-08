@@ -1,5 +1,5 @@
 #define MyAppName "TPS Photo Import & Backup"
-#define MyAppVersion "1.2.7"
+#define MyAppVersion "1.2.8"
 #define MyAppPublisher "Tangalooma Photo Shop"
 #define MyAppExeName "TPS Photo Import & Backup.exe"
 
@@ -33,13 +33,16 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 
 [InstallDelete]
 Type: filesandordirs; Name: "{app}\*"
+Type: files; Name: "{autoprograms}\{#MyAppName}.lnk"
+Type: files; Name: "{autodesktop}\{#MyAppName}.lnk"
 
 [Files]
 Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "assets\tps_photo_backup.ico"; DestDir: "{app}"; DestName: "TPS Photo Import & Backup.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\TPS Photo Import & Backup.ico"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\TPS Photo Import & Backup.ico"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
