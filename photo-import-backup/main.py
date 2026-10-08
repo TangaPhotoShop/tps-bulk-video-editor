@@ -12,6 +12,7 @@ def packaged_self_test() -> int:
         import tps_backup.eventlog
         import tps_backup.dropbox_client
         import tps_backup.backup_engine
+        import tps_backup.autocorrect
         from tps_backup.ui import TPSApp
 
         required = [
@@ -28,6 +29,10 @@ def packaged_self_test() -> int:
             "auto_check_connections_on_load",
             "apply_startup_connection_results",
             "reset_import_screen",
+            "start_autocorrect_for_job",
+            "start_pending_autocorrect_sync",
+            "restore_selected_backup1_originals",
+            "update_backup_mode_labels",
         ]
         missing = [name for name in required if not hasattr(TPSApp, name)]
         if missing:
