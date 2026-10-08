@@ -794,6 +794,27 @@ class BackupEngine:
             self._write_manifest_copy(source_folder, manifest)
         return manifest
 
+    def mark_autocorrect_failed(self, job_id: str, error: str) -> None:
+        manifest = self.storage.load_manifest(job_id)
+        if not manifest or manifest.get("backup_mode") != "auto_correct":
+            return
+        backups = manifest.setdefault("backups", {})
+        b1 = backups.setdefault("backup1", {})
+        b1["status"] = "autocorrect_failed"
+        b1["last_error"] = error
+        manifest["status"] = "backup2_original_safe_autocorrect_failed_dropbox_pending"
+        manifest["autocorrect_error"] = error
+        self.storage.save_manifest(job_id, manifest)
+        row = self.storage.get_job(job_id)
+        manifest_path = Path(row["manifest_path"]) if row else self.storage.save_manifest(job_id, manifest)
+        self.storage.upsert_job(self._job_row(manifest, manifest_path))
+        source_folder = Path(backups.get("backup2", {}).get("path", ""))
+        if source_folder.exists():
+            try:
+                self._write_manifest_copy(source_folder, manifest)
+            except Exception:
+                pass
+
     def restore_backup1_originals(self, job_id: str, progress: Callable[[ProgressEvent], None] | None = None) -> tuple[dict[str, Any], str]:
         """Rebuild Backup 1 from untouched Backup 2 originals without deleting corrected files."""
         manifest = self.storage.load_manifest(job_id)
