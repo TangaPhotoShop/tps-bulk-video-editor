@@ -1451,6 +1451,12 @@ class TPSApp(tk.Tk):
             command=self.complete_selected_emergency,
         ).pack(side="left", padx=8)
         ttk.Button(actions, text="Sync Event Log queue", style="Secondary.TButton", command=self.sync_eventlog_queue).pack(side="left")
+        ttk.Button(
+            actions,
+            text="Restore Backup 1 originals",
+            style="Secondary.TButton",
+            command=self.restore_selected_backup1_originals,
+        ).pack(side="left", padx=(8, 0))
 
         filters = tk.Frame(card, bg="#F6F8F8", highlightbackground=LINE, highlightthickness=1)
         filters.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
@@ -1651,6 +1657,43 @@ class TPSApp(tk.Tk):
                 if col == self.history_sort_column:
                     arrow = " ▼" if self.history_sort_reverse else " ▲"
                 self.history_tree.heading(col, text=label + arrow, command=lambda c=col: self.sort_history_by(c))
+
+    def restore_selected_backup1_originals(self):
+        sel = self.history_tree.selection()
+        if not sel:
+            messagebox.showwarning("Select a job", "Choose an Auto Correct backup job first.", parent=self)
+            return
+        job_id = sel[0]
+        manifest = self.storage.load_manifest(job_id)
+        if not manifest or manifest.get("backup_mode") not in {"auto_correct", "original_restored"}:
+            messagebox.showwarning("Not an Auto Correct job", "The selected job was not created with Backup 1 Auto Correct mode.", parent=self)
+            return
+        if manifest.get("backup_mode") == "original_restored":
+            messagebox.showinfo("Already restored", "Backup 1 has already been restored to exact originals for this job.", parent=self)
+            return
+        if not messagebox.askyesno(
+            "Restore Backup 1 originals",
+            "Rebuild Backup 1 from the untouched Backup 2 originals?\n\n"
+            "The current Auto-Corrected Backup 1 folder will NOT be deleted. It will be renamed with an "
+            "AUTO-CORRECTED-SAVED suffix beside the restored original folder.\n\nContinue?",
+            parent=self,
+        ):
+            return
+
+        def progress(ev: ProgressEvent):
+            self.msg_queue.put(("progress", ev))
+
+        def worker():
+            windows_keep_awake(True)
+            try:
+                _, archive_path = self.engine.restore_backup1_originals(job_id, progress)
+                self.msg_queue.put(("restore_backup1_done", (job_id, archive_path)))
+            except Exception as exc:
+                self.msg_queue.put(("restore_backup1_error", str(exc)))
+            finally:
+                windows_keep_awake(False)
+
+        threading.Thread(target=worker, daemon=True, name="TPSRestoreBackup1").start()
 
     def complete_selected_emergency(self):
         sel = self.history_tree.selection()
