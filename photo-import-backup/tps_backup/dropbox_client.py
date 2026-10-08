@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import shutil
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -192,21 +191,11 @@ class DropboxBackupClient:
         backups = manifest.get("backups", {})
         b1 = backups.get("backup1", {})
         b2 = backups.get("backup2", {})
-        if manifest.get("backup_mode") == "auto_correct":
-            staging = backups.get("staging", {})
-            if b2.get("status") != "verified" or staging.get("status") != "verified":
-                raise DropboxBackupError("Dropbox originals require verified Backup 2 and temporary original safety copy first")
-            source_folder = Path(staging.get("path", ""))
-            if not source_folder.exists():
-                source_folder = Path(b2.get("path", ""))
-            if not source_folder.exists():
-                raise DropboxBackupError("No verified original source is reachable for Dropbox")
-        else:
-            if b1.get("status") != "verified" or b2.get("status") != "verified":
-                raise DropboxBackupError("Dropbox upload requires both local backups to be verified first")
-            source_folder = Path(b1.get("path", ""))
-            if not source_folder.exists():
-                raise DropboxBackupError("Primary verified backup is no longer reachable")
+        if b1.get("status") != "verified" or b2.get("status") != "verified":
+            raise DropboxBackupError("Dropbox upload requires both local backups to be verified first")
+        source_folder = Path(b1.get("path", ""))
+        if not source_folder.exists():
+            raise DropboxBackupError("Primary verified backup is no longer reachable")
 
         dbx, _ = self._client()
         remote_folder = f"{DROPBOX_DESTINATION}/{manifest['folder_name']}"
@@ -251,29 +240,8 @@ class DropboxBackupClient:
 
         cloud["status"] = "verified"
         cloud["verified_at"] = datetime.now().isoformat()
-        if manifest.get("backup_mode") == "auto_correct":
-            b1_status = backups.get("backup1", {}).get("status", "")
-            manifest["status"] = (
-                "backup1_autocorrected_backup2_original_dropbox_verified"
-                if b1_status == "autocorrect_verified"
-                else "backup2_original_dropbox_verified_autocorrect_pending"
-            )
-        else:
-            manifest["status"] = "verified_2_of_2_dropbox_verified"
+        manifest["status"] = "verified_2_of_2_dropbox_verified"
         self._save_cloud_state(manifest)
-
-        if manifest.get("backup_mode") == "auto_correct":
-            staging = backups.get("staging", {})
-            staging_path = Path(staging.get("path", ""))
-            if staging.get("status") == "verified" and staging_path.exists():
-                try:
-                    shutil.rmtree(staging_path)
-                    staging["status"] = "cleaned_after_dropbox"
-                    staging["cleaned_at"] = datetime.now().isoformat()
-                    self._save_cloud_state(manifest)
-                except Exception as exc:
-                    staging["cleanup_error"] = str(exc)
-                    self._save_cloud_state(manifest)
         return manifest
 
     def _save_cloud_state(self, manifest: dict[str, Any], error: str | None = None) -> None:
@@ -287,10 +255,10 @@ class DropboxBackupClient:
             row["updated_at"] = datetime.now().isoformat()
             row["error_message"] = error
             self.storage.upsert_job(row)
-        for key in ("backup1", "backup2", "staging"):
+        for key in ("backup1", "backup2"):
             info = manifest.get("backups", {}).get(key, {})
             folder = Path(info.get("path", ""))
-            if info.get("status") in {"verified", "autocorrect_verified", "autocorrect_processing"} and folder.exists():
+            if info.get("status") == "verified" and folder.exists():
                 try:
                     tmp = folder / "TPS-IMPORT-MANIFEST.json.tmp"
                     final = folder / "TPS-IMPORT-MANIFEST.json"
@@ -307,30 +275,12 @@ class DropboxBackupClient:
         cloud = manifest.setdefault("backups", {}).setdefault("dropbox", {"path": "", "status": "pending", "uploaded": []})
         cloud["status"] = "pending"
         cloud["last_error"] = error
-        if manifest.get("backup_mode") == "auto_correct":
-            b1_ok = manifest.get("backups", {}).get("backup1", {}).get("status") == "autocorrect_verified"
-            manifest["status"] = "backup1_autocorrected_backup2_original_dropbox_pending" if b1_ok else "originals_safe_local_dropbox_pending_autocorrect_pending"
-        else:
-            manifest["status"] = "verified_2_of_2_dropbox_pending"
+        manifest["status"] = "verified_2_of_2_dropbox_pending"
         self._save_cloud_state(manifest, error)
 
     def pending_jobs(self, limit: int = 100) -> list[str]:
         pending = []
         for row in self.storage.list_jobs(limit=limit):
-            if row.get("backup3_status") == "verified":
-                continue
-            manifest = self.storage.load_manifest(row["id"])
-            if not manifest:
-                continue
-            backups = manifest.get("backups", {})
-            if manifest.get("backup_mode") == "auto_correct":
-                b1_state = backups.get("backup1", {}).get("status")
-                if (
-                    backups.get("backup2", {}).get("status") == "verified"
-                    and backups.get("staging", {}).get("status") == "verified"
-                    and b1_state in {"autocorrect_verified", "autocorrect_failed"}
-                ):
-                    pending.append(row["id"])
-            elif row.get("primary_status") == "verified" and row.get("backup2_status") == "verified":
+            if row.get("primary_status") == "verified" and row.get("backup2_status") == "verified" and row.get("backup3_status") != "verified":
                 pending.append(row["id"])
         return pending
