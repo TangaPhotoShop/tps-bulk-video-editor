@@ -991,9 +991,10 @@ class TPSApp(tk.Tk):
         return messagebox.askyesno("Confirm event details", summary, parent=self, icon="question")
 
     def auto_check_connections_on_load(self):
-        """Check local backups, Dropbox and Event Log on startup without freezing the UI."""
+        """Check active local safety paths, Dropbox and Event Log on startup without freezing the UI."""
         if self.backup_in_progress:
             return
+        self.update_backup_mode_labels()
 
         if hasattr(self, "backup_status_labels"):
             self.backup_status_labels[1].configure(text="Checking…", fg=BLUE)
@@ -1009,6 +1010,7 @@ class TPSApp(tk.Tk):
                 checks = {
                     "backup1": (False, str(exc), 0),
                     "backup2": (False, str(exc), 0),
+                    "staging": (False, str(exc), 0),
                 }
 
             if self.dropbox.configured():
@@ -1033,32 +1035,41 @@ class TPSApp(tk.Tk):
 
     def apply_startup_connection_results(self, payload):
         checks, dropbox_ok, dropbox_msg, eventlog_ok, eventlog_msg = payload
-        local_ok = True
-        for i, key in enumerate(("backup1", "backup2"), start=1):
-            ok, msg, free = checks.get(key, (False, "Not available", 0))
-            local_ok = local_ok and bool(ok)
-            if hasattr(self, "backup_status_labels"):
-                self.backup_status_labels[i].configure(
-                    text=(f"Ready • {human_bytes(free)} free" if ok else msg),
-                    fg=(GREEN if ok else RED),
-                )
+        auto_mode = self.is_autocorrect_mode()
+        self.update_backup_mode_labels()
+
+        b1_ok, b1_msg, b1_free = checks.get("backup1", (False, "Not available", 0))
+        b2_ok, b2_msg, b2_free = checks.get("backup2", (False, "Not available", 0))
+        local_ok = bool(b1_ok and b2_ok)
 
         if hasattr(self, "backup_status_labels"):
+            self.backup_status_labels[1].configure(
+                text=(("Ready for Auto Correct" if auto_mode else f"Ready • {human_bytes(b1_free)} free") if b1_ok else b1_msg),
+                fg=(GREEN if b1_ok else RED),
+            )
+
+            if auto_mode:
+                staging_ok, staging_msg, staging_free = checks.get("staging", (False, "Temporary safety not available", 0))
+                local_ok = local_ok and bool(staging_ok)
+                self.backup_status_labels[2].configure(
+                    text=(f"Original + temp safety ready • {human_bytes(min(b2_free, staging_free))} free" if b2_ok and staging_ok else (b2_msg if not b2_ok else staging_msg)),
+                    fg=(GREEN if b2_ok and staging_ok else RED),
+                )
+            else:
+                self.backup_status_labels[2].configure(
+                    text=(f"Ready • {human_bytes(b2_free)} free" if b2_ok else b2_msg),
+                    fg=(GREEN if b2_ok else RED),
+                )
+
             if dropbox_ok:
                 self.backup_status_labels[3].configure(
-                    text="Connected ✓ • uploads after 2/2 local verification",
+                    text=("Connected ✓ • originals upload after local safety" if auto_mode else "Connected ✓ • uploads after 2/2 local verification"),
                     fg=GREEN,
                 )
             elif self.dropbox.configured():
-                self.backup_status_labels[3].configure(
-                    text=f"Dropbox issue • {dropbox_msg}",
-                    fg=ORANGE,
-                )
+                self.backup_status_labels[3].configure(text=f"Dropbox issue • {dropbox_msg}", fg=ORANGE)
             else:
-                self.backup_status_labels[3].configure(
-                    text="Not connected • cloud backups remain pending",
-                    fg=ORANGE,
-                )
+                self.backup_status_labels[3].configure(text="Not connected • cloud backups remain pending", fg=ORANGE)
 
         if hasattr(self, "eventlog_admin_status"):
             self.eventlog_admin_status.configure(
@@ -1069,12 +1080,12 @@ class TPSApp(tk.Tk):
         if hasattr(self, "emergency_btn"):
             self.emergency_btn.state(["disabled"] if local_ok else ["!disabled"])
 
-        # Do not overwrite an SD-card detection/result message if the user has already inserted a card.
         if not self.source_var.get().strip():
             if local_ok:
                 cloud_note = "Dropbox connected" if dropbox_ok else "Dropbox pending/not connected"
                 event_note = "Event Log connected" if eventlog_ok else "Event Log will retry"
-                self.set_banner(f"Connections checked ✓ — local backups ready • {cloud_note} • {event_note}. Insert an SD card.", GREEN)
+                mode_note = "Auto Correct working mode" if auto_mode else "Exact-original mode"
+                self.set_banner(f"Connections checked ✓ — {mode_note} ready • {cloud_note} • {event_note}. Insert an SD card.", GREEN)
             else:
                 self.set_banner("Connection check found a local backup problem — Emergency Local Backup is available.", RED)
 
