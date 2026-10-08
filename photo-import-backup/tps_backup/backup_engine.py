@@ -18,7 +18,6 @@ from typing import Callable, Iterable, Any
 from .storage import Storage
 from .eventlog import EventLogClient
 from .dropbox_client import DROPBOX_DESTINATION
-from .autocorrect import auto_correct_jpeg
 
 CHUNK_SIZE = 8 * 1024 * 1024
 JPEG_SUFFIXES = {".jpg", ".jpeg"}
@@ -184,59 +183,15 @@ class BackupEngine:
         except Exception as exc:
             return False, f"Unavailable: {exc}", 0
 
-    def backup1_mode(self) -> str:
-        mode = str(self.storage.get_setting("backup1_mode", "original") or "original").strip().lower()
-        return "auto_correct" if mode == "auto_correct" else "original"
-
-    def staging_base(self) -> Path:
-        raw = str(self.storage.get_setting("emergency_path", "") or "").strip()
-        if not raw:
-            raise BackupError("Emergency / temporary safety location is not configured")
-        return Path(raw) / "_TPS_TEMP_ORIGINAL_STAGING"
-
     def preflight_all(self, required_bytes: int) -> dict[str, tuple[bool, str, int]]:
-        """Preflight active destinations for the selected Backup 1 mode."""
-        mode = self.backup1_mode()
-        if mode == "auto_correct":
-            try:
-                staging = self.staging_base()
-                staging.mkdir(parents=True, exist_ok=True)
-            except Exception as exc:
-                return {
-                    "backup1": self.preflight_path(self.storage.get_setting("backup1_path", ""), required_bytes),
-                    "backup2": self.preflight_path(self.storage.get_setting("backup2_path", ""), required_bytes),
-                    "staging": (False, f"Temporary safety location unavailable: {exc}", 0),
-                }
-            raw = {
-                "backup1": self.storage.get_setting("backup1_path", ""),
-                "backup2": self.storage.get_setting("backup2_path", ""),
-                "staging": str(staging),
-            }
-            results = {k: self.preflight_path(v, required_bytes) for k, v in raw.items()}
-
-            b1_norm = os.path.normcase(os.path.abspath(str(raw["backup1"]))) if raw["backup1"] else ""
-            b2_norm = os.path.normcase(os.path.abspath(str(raw["backup2"]))) if raw["backup2"] else ""
-            if b1_norm and b2_norm and b1_norm == b2_norm:
-                results["backup1"] = (
-                    False,
-                    "Auto Correct mode requires Backup 1 and Backup 2 to be different folders",
-                    results["backup1"][2],
-                )
-
-            if raw["backup2"] and results["backup2"][0] and results["staging"][0]:
-                if path_network_identity(Path(raw["backup2"])) == path_network_identity(Path(raw["staging"])):
-                    results["staging"] = (
-                        False,
-                        "Temporary safety copy must be on a different drive/share from Backup 2",
-                        results["staging"][2],
-                    )
-            return results
-
+        """Preflight the two required local/filesystem backups. Dropbox never blocks card safety."""
         raw = {
             "backup1": self.storage.get_setting("backup1_path", ""),
             "backup2": self.storage.get_setting("backup2_path", ""),
         }
         results = {k: self.preflight_path(v, required_bytes) for k, v in raw.items()}
+        # If both configured folders are on the same visible volume/share, ensure the
+        # shared free space can hold both copies. Separate physical storage is still recommended.
         groups: dict[str, list[str]] = {}
         for key, value in raw.items():
             if value:
@@ -456,9 +411,6 @@ class BackupEngine:
             cb(ProgressEvent(**kwargs))
 
     def run_normal(self, spec: BackupJobSpec, progress: Callable[[ProgressEvent], None] | None = None) -> dict[str, Any]:
-        if self.backup1_mode() == "auto_correct":
-            return self._run_normal_autocorrect(spec, progress)
-
         """Create two independently verified filesystem copies, then release the SD card.
 
         Dropbox is intentionally asynchronous and is uploaded later from verified Backup 1,
@@ -597,271 +549,6 @@ class BackupEngine:
             self._emit(progress, stage="error", message=str(exc), current=0, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=0)
             raise
 
-    def _run_normal_autocorrect(self, spec: BackupJobSpec, progress: Callable[[ProgressEvent], None] | None = None) -> dict[str, Any]:
-        """Protect exact originals twice, then release the SD card.
-
-        Backup 2 is the permanent untouched local archive.
-        Temporary staging is a second exact original copy until Dropbox verifies.
-        Backup 1 is built separately as a corrected working set.
-        """
-        self.reset_cancel()
-        folder_name, photos = self._build_names(spec)
-        selected = [p for p in photos if p.selected]
-        if not selected:
-            raise BackupError("No photos selected")
-        total_bytes = sum(p.size for p in selected)
-        checks = self.preflight_all(total_bytes)
-        unavailable = [k for k, v in checks.items() if not v[0]]
-        if unavailable:
-            details = "; ".join(f"{k}: {checks[k][1]}" for k in unavailable)
-            raise BackupError(f"Required location unavailable. {details}")
-
-        b1 = Path(self.storage.get_setting("backup1_path")) / folder_name
-        b2 = Path(self.storage.get_setting("backup2_path")) / folder_name
-        staging = self.staging_base() / folder_name
-        b2.mkdir(parents=True, exist_ok=True)
-        staging.mkdir(parents=True, exist_ok=True)
-
-        job_id = self._make_job_id(spec)
-        created = datetime.now().isoformat()
-        dropbox_status = "pending" if (self.storage.get_setting("dropbox_app_key", "") and self.storage.get_setting("dropbox_refresh_token", "")) else "not_connected"
-        manifest: dict[str, Any] = {
-            "schema": 3,
-            "job_id": job_id,
-            "created_at": created,
-            "backup_mode": "auto_correct",
-            "source_path": spec.source_path,
-            "folder_name": folder_name,
-            "event": {
-                "date": spec.date_text,
-                "photographer": spec.photographer,
-                "initials": spec.initials,
-                "event_name": spec.event_name,
-                "event_code": spec.event_code,
-                "event_time": spec.event_time,
-                "guests": spec.guests,
-                "issue_type": spec.issue_type,
-                "notes": spec.notes,
-            },
-            "excluded_count": len([p for p in photos if not p.selected]),
-            "selected_files": [],
-            "autocorrect_files": [],
-            "backups": {
-                "backup1": {"path": str(b1), "status": "autocorrect_pending", "kind": "working_corrected"},
-                "backup2": {"path": str(b2), "status": "pending", "kind": "original_archive"},
-                "staging": {"path": str(staging), "status": "pending", "kind": "temporary_original_safety"},
-                "dropbox": {"path": f"{DROPBOX_DESTINATION}/{folder_name}", "status": dropbox_status, "uploaded": [], "kind": "original_cloud_archive"},
-                "emergency": {"path": "", "status": "not_used"},
-            },
-            "status": "running",
-            "eventlog_status": "queued",
-            "sd_deleted": False,
-        }
-        manifest_path = self.storage.save_manifest(job_id, manifest)
-        self.storage.upsert_job(self._job_row(manifest, manifest_path))
-
-        bytes_done = 0
-        start_time = time.monotonic()
-        try:
-            # SD -> Backup 2 exact originals.
-            for idx, photo in enumerate(selected, start=1):
-                src = Path(photo.path)
-                dest = b2 / photo.renamed
-                self._emit(progress, stage="backup2_original", message=f"Backup 2 originals: {photo.original_name}", current=idx-1, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=(bytes_done / max(0.001, time.monotonic()-start_time)))
-
-                def add_bytes(n: int) -> None:
-                    nonlocal bytes_done
-                    bytes_done += n
-                    self._emit(progress, stage="backup2_original", message=f"Backup 2 originals: {photo.original_name}", current=idx-1, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=(bytes_done / max(0.001, time.monotonic()-start_time)))
-
-                digest = self._copy_source_to_primary(src, dest, photo.size, add_bytes)
-                manifest["selected_files"].append({
-                    "source": photo.path,
-                    "original_name": photo.original_name,
-                    "number": photo.number,
-                    "renamed": photo.renamed,
-                    "size": photo.size,
-                    "sha256": digest,
-                })
-                self.storage.save_manifest(job_id, manifest)
-
-            self._verify_manifest_files(b2, manifest["selected_files"])
-            self._verify_folder_count(b2, len(selected))
-            manifest["backups"]["backup2"]["status"] = "verified"
-            self._write_manifest_copy(b2, manifest)
-            self.storage.save_manifest(job_id, manifest)
-            self.storage.upsert_job(self._job_row(manifest, manifest_path))
-            self._emit(progress, stage="backup2_ready", message="Backup 2 originals verified", current=len(selected), total=len(selected), bytes_done=total_bytes, bytes_total=total_bytes, rate_bps=0)
-
-            # Backup 2 -> temporary exact-original staging.
-            for i, item in enumerate(manifest["selected_files"], start=1):
-                if self.cancel_event.is_set():
-                    raise BackupError("Backup cancelled")
-                src = b2 / item["renamed"]
-                dest = staging / item["renamed"]
-                self._copy_verified_file(src, dest, item["size"], item["sha256"])
-                self._emit(progress, stage="staging", message=f"Temporary original safety: {item['renamed']}", current=i, total=len(selected), bytes_done=i, bytes_total=len(selected), rate_bps=0)
-
-            self._verify_manifest_files(staging, manifest["selected_files"])
-            self._verify_folder_count(staging, len(selected))
-            manifest["backups"]["staging"]["status"] = "verified"
-            self._write_manifest_copy(staging, manifest)
-
-            self._verify_manifest_files(b2, manifest["selected_files"])
-            self._verify_manifest_files(staging, manifest["selected_files"])
-            if path_network_identity(b2) == path_network_identity(staging):
-                raise BackupError("SD deletion blocked: Backup 2 and temporary originals are on the same drive/share")
-
-            manifest["status"] = "originals_safe_local_dropbox_pending_autocorrect_pending"
-            self.storage.save_manifest(job_id, manifest)
-            self._write_manifest_copy(b2, manifest)
-            self._write_manifest_copy(staging, manifest)
-            self.storage.upsert_job(self._job_row(manifest, manifest_path))
-
-            payload = self._event_payload(manifest)
-            self.eventlog.queue(job_id, payload)
-            sent, _ = self.eventlog.try_send_job(job_id)
-            manifest["eventlog_status"] = "sent" if sent else "queued"
-            self.storage.save_manifest(job_id, manifest)
-            self.storage.upsert_job(self._job_row(manifest, manifest_path))
-
-            self._emit(progress, stage="originals_safe", message="Originals protected twice — SD card can be cleared while Auto Correct and Dropbox continue", current=len(selected), total=len(selected), bytes_done=total_bytes, bytes_total=total_bytes, rate_bps=0)
-            return manifest
-        except Exception as exc:
-            manifest["status"] = "interrupted"
-            manifest["sd_deleted"] = False
-            manifest["error"] = str(exc)
-            self.storage.save_manifest(job_id, manifest)
-            self.storage.upsert_job(self._job_row(manifest, manifest_path, str(exc)))
-            self._emit(progress, stage="error", message=str(exc), current=0, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=0)
-            raise
-
-    def build_autocorrect_backup1(self, job_id: str, progress: Callable[[ProgressEvent], None] | None = None) -> dict[str, Any]:
-        manifest = self.storage.load_manifest(job_id)
-        if not manifest or manifest.get("backup_mode") != "auto_correct":
-            return manifest or {}
-        backups = manifest.get("backups", {})
-        if backups.get("backup2", {}).get("status") != "verified":
-            raise BackupError("Auto Correct requires verified Backup 2 originals")
-
-        source_folder = Path(backups["backup2"]["path"])
-        dest_folder = Path(backups["backup1"]["path"])
-        dest_folder.mkdir(parents=True, exist_ok=True)
-        corrected = {x.get("renamed"): x for x in manifest.get("autocorrect_files", [])}
-        files = manifest.get("selected_files", [])
-        event_code = str(manifest.get("event", {}).get("event_code", ""))
-
-        for idx, item in enumerate(files, start=1):
-            if self.cancel_event.is_set():
-                raise BackupError("Auto Correct cancelled")
-            src = source_folder / item["renamed"]
-            dest = dest_folder / item["renamed"]
-            existing = corrected.get(item["renamed"])
-            if existing and dest.exists() and dest.stat().st_size == existing.get("size") and sha256_file(dest) == existing.get("sha256"):
-                self._emit(progress, stage="autocorrect", message=f"Auto Correct: {item['renamed']}", current=idx, total=len(files), bytes_done=idx, bytes_total=len(files), rate_bps=0)
-                continue
-            # Backup 1 is derived working data only. If a previous correction was
-            # interrupted between file-save and manifest-save, safely rebuild that
-            # working JPEG from untouched Backup 2 originals.
-            if dest.exists():
-                dest.unlink()
-
-            result = auto_correct_jpeg(src, dest, event_code)
-            corrected[item["renamed"]] = {
-                "renamed": item["renamed"],
-                "size": result["size"],
-                "sha256": result["sha256"],
-                "width": result["width"],
-                "height": result["height"],
-                "exposure_factor": result["exposure_factor"],
-            }
-            manifest["autocorrect_files"] = list(corrected.values())
-            backups["backup1"]["status"] = "autocorrect_processing"
-            self.storage.save_manifest(job_id, manifest)
-            self._emit(progress, stage="autocorrect", message=f"Auto Correct: {item['renamed']}", current=idx, total=len(files), bytes_done=idx, bytes_total=len(files), rate_bps=0)
-
-        self._verify_folder_count(dest_folder, len(files))
-        for item in manifest.get("autocorrect_files", []):
-            p = dest_folder / item["renamed"]
-            if not p.exists() or p.stat().st_size != item["size"] or sha256_file(p) != item["sha256"]:
-                raise BackupError(f"Auto Correct verification failed: {item['renamed']}")
-
-        backups["backup1"]["status"] = "autocorrect_verified"
-        backups["backup1"]["verified_at"] = datetime.now().isoformat()
-        cloud_ok = backups.get("dropbox", {}).get("status") == "verified"
-        manifest["status"] = "backup1_autocorrected_backup2_original_dropbox_verified" if cloud_ok else "backup1_autocorrected_backup2_original_dropbox_pending"
-        self.storage.save_manifest(job_id, manifest)
-        row = self.storage.get_job(job_id)
-        manifest_path = Path(row["manifest_path"]) if row else self.storage.save_manifest(job_id, manifest)
-        self.storage.upsert_job(self._job_row(manifest, manifest_path))
-        self._write_manifest_copy(dest_folder, manifest)
-        if source_folder.exists():
-            self._write_manifest_copy(source_folder, manifest)
-        return manifest
-
-    def mark_autocorrect_failed(self, job_id: str, error: str) -> None:
-        manifest = self.storage.load_manifest(job_id)
-        if not manifest or manifest.get("backup_mode") != "auto_correct":
-            return
-        backups = manifest.setdefault("backups", {})
-        b1 = backups.setdefault("backup1", {})
-        b1["status"] = "autocorrect_failed"
-        b1["last_error"] = error
-        manifest["status"] = "backup2_original_safe_autocorrect_failed_dropbox_pending"
-        manifest["autocorrect_error"] = error
-        self.storage.save_manifest(job_id, manifest)
-        row = self.storage.get_job(job_id)
-        manifest_path = Path(row["manifest_path"]) if row else self.storage.save_manifest(job_id, manifest)
-        self.storage.upsert_job(self._job_row(manifest, manifest_path))
-        source_folder = Path(backups.get("backup2", {}).get("path", ""))
-        if source_folder.exists():
-            try:
-                self._write_manifest_copy(source_folder, manifest)
-            except Exception:
-                pass
-
-    def restore_backup1_originals(self, job_id: str, progress: Callable[[ProgressEvent], None] | None = None) -> tuple[dict[str, Any], str]:
-        """Rebuild Backup 1 from untouched Backup 2 originals without deleting corrected files."""
-        manifest = self.storage.load_manifest(job_id)
-        if not manifest:
-            raise BackupError("Manifest not found")
-        backups = manifest.get("backups", {})
-        if backups.get("backup2", {}).get("status") != "verified":
-            raise BackupError("Verified Backup 2 originals are required for rollback")
-
-        source_folder = Path(backups["backup2"]["path"])
-        dest_folder = Path(backups["backup1"]["path"])
-        archive_path = ""
-        if dest_folder.exists() and any(dest_folder.iterdir()):
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            saved = dest_folder.with_name(dest_folder.name + f"-AUTO-CORRECTED-SAVED-{stamp}")
-            if saved.exists():
-                saved = dest_folder.with_name(dest_folder.name + f"-AUTO-CORRECTED-SAVED-{stamp}-{uuid.uuid4().hex[:4].upper()}")
-            dest_folder.rename(saved)
-            archive_path = str(saved)
-
-        dest_folder.mkdir(parents=True, exist_ok=True)
-        files = manifest.get("selected_files", [])
-        for idx, item in enumerate(files, start=1):
-            self._copy_verified_file(source_folder / item["renamed"], dest_folder / item["renamed"], item["size"], item["sha256"])
-            self._emit(progress, stage="restore_backup1", message=f"Restore Backup 1 originals: {item['renamed']}", current=idx, total=len(files), bytes_done=idx, bytes_total=len(files), rate_bps=0)
-
-        self._verify_manifest_files(dest_folder, files)
-        self._verify_folder_count(dest_folder, len(files))
-        manifest["backup_mode"] = "original_restored"
-        manifest["autocorrect_archive_path"] = archive_path
-        backups["backup1"]["status"] = "verified"
-        backups["backup1"]["kind"] = "original_restored"
-        cloud_ok = backups.get("dropbox", {}).get("status") == "verified"
-        manifest["status"] = "restored_originals_dropbox_verified" if cloud_ok else "restored_originals_dropbox_pending"
-        self.storage.save_manifest(job_id, manifest)
-        row = self.storage.get_job(job_id)
-        manifest_path = Path(row["manifest_path"]) if row else self.storage.save_manifest(job_id, manifest)
-        self.storage.upsert_job(self._job_row(manifest, manifest_path))
-        self._write_manifest_copy(dest_folder, manifest)
-        self._write_manifest_copy(source_folder, manifest)
-        return manifest, archive_path
-
     def run_emergency(self, spec: BackupJobSpec, progress: Callable[[ProgressEvent], None] | None = None) -> dict[str, Any]:
         self.reset_cancel()
         folder_name, photos = self._build_names(spec)
@@ -878,10 +565,8 @@ class BackupEngine:
 
         job_id = self._make_job_id(spec)
         created = datetime.now().isoformat()
-        mode = self.backup1_mode()
         manifest: dict[str, Any] = {
-            "schema": 3,
-            "backup_mode": mode,
+            "schema": 1,
             "job_id": job_id,
             "created_at": created,
             "source_path": spec.source_path,
@@ -894,17 +579,8 @@ class BackupEngine:
             "excluded_count": len([p for p in photos if not p.selected]),
             "selected_files": [],
             "backups": {
-                "backup1": {
-                    "path": str(Path(self.storage.get_setting("backup1_path", "")) / folder_name) if mode == "auto_correct" else "",
-                    "status": "autocorrect_pending" if mode == "auto_correct" else "pending_local",
-                    "kind": "working_corrected" if mode == "auto_correct" else "original_backup",
-                },
-                "backup2": {"path": "", "status": "pending_local", "kind": "original_archive"},
-                "staging": {
-                    "path": str(dest_folder) if mode == "auto_correct" else "",
-                    "status": "running" if mode == "auto_correct" else "not_used",
-                    "kind": "temporary_original_safety" if mode == "auto_correct" else "not_used",
-                },
+                "backup1": {"path": "", "status": "pending_local"},
+                "backup2": {"path": "", "status": "pending_local"},
                 "dropbox": {"path": f"{DROPBOX_DESTINATION}/{folder_name}", "status": "pending", "uploaded": []},
                 "emergency": {"path": str(dest_folder), "status": "running"},
             },
@@ -936,8 +612,6 @@ class BackupEngine:
 
             self._verify_folder_count(dest_folder, len(selected))
             manifest["backups"]["emergency"]["status"] = "verified"
-            if manifest.get("backup_mode") == "auto_correct":
-                manifest["backups"]["staging"]["status"] = "verified"
             manifest["status"] = "emergency_verified_local_backups_pending"
             self._write_manifest_copy(dest_folder, manifest)
             self.storage.save_manifest(job_id, manifest)
@@ -958,7 +632,7 @@ class BackupEngine:
             raise
 
     def complete_emergency_to_network(self, job_id: str, progress: Callable[[ProgressEvent], None] | None = None) -> dict[str, Any]:
-        """Promote a verified emergency copy into the active normal backup workflow."""
+        """Promote a verified emergency copy into the two required normal local backups."""
         self.reset_cancel()
         manifest = self.storage.load_manifest(job_id)
         if not manifest:
@@ -975,49 +649,26 @@ class BackupEngine:
 
         source_folder = Path(manifest["backups"]["emergency"]["path"])
         folder_name = manifest["folder_name"]
+        dests = {
+            "backup1": Path(self.storage.get_setting("backup1_path")) / folder_name,
+            "backup2": Path(self.storage.get_setting("backup2_path")) / folder_name,
+        }
+        for d in dests.values():
+            d.mkdir(parents=True, exist_ok=True)
 
         try:
-            if manifest.get("backup_mode") == "auto_correct":
-                # The verified emergency folder itself remains the temporary exact-original
-                # safety copy. Promote only the permanent untouched originals to Backup 2.
-                b2 = Path(self.storage.get_setting("backup2_path")) / folder_name
-                b2.mkdir(parents=True, exist_ok=True)
+            for label, folder in dests.items():
                 for i, item in enumerate(files, start=1):
-                    self._copy_verified_file(source_folder / item["renamed"], b2 / item["renamed"], item["size"], item["sha256"])
-                    self._emit(progress, stage="backup2", message=f"Completing Backup 2 originals: {item['renamed']}", current=i, total=len(files), bytes_done=i, bytes_total=len(files), rate_bps=0)
-                self._verify_manifest_files(b2, files)
-                self._verify_folder_count(b2, len(files))
-                manifest["backups"]["backup2"] = {"path": str(b2), "status": "verified", "kind": "original_archive"}
-                manifest["backups"]["staging"] = {"path": str(source_folder), "status": "verified", "kind": "temporary_original_safety"}
-                manifest["backups"]["backup1"] = {
-                    "path": str(Path(self.storage.get_setting("backup1_path")) / folder_name),
-                    "status": "autocorrect_pending",
-                    "kind": "working_corrected",
-                }
-                self._write_manifest_copy(b2, manifest)
-                self._write_manifest_copy(source_folder, manifest)
-                manifest["status"] = "originals_safe_local_dropbox_pending_autocorrect_pending"
-            else:
-                dests = {
-                    "backup1": Path(self.storage.get_setting("backup1_path")) / folder_name,
-                    "backup2": Path(self.storage.get_setting("backup2_path")) / folder_name,
-                }
-                for d in dests.values():
-                    d.mkdir(parents=True, exist_ok=True)
-                for label, folder in dests.items():
-                    for i, item in enumerate(files, start=1):
-                        src = source_folder / item["renamed"]
-                        dest = folder / item["renamed"]
-                        self._copy_verified_file(src, dest, item["size"], item["sha256"])
-                        self._emit(progress, stage=label, message=f"Completing {label}: {item['renamed']}", current=i, total=len(files), bytes_done=i, bytes_total=len(files), rate_bps=0)
-                    self._verify_manifest_files(folder, files)
-                    self._verify_folder_count(folder, len(files))
-                    manifest["backups"][label] = {"path": str(folder), "status": "verified"}
-                    self._write_manifest_copy(folder, manifest)
-                    self.storage.save_manifest(job_id, manifest)
-                manifest["status"] = "verified_2_of_2_dropbox_pending"
-
+                    src = source_folder / item["renamed"]
+                    dest = folder / item["renamed"]
+                    self._copy_verified_file(src, dest, item["size"], item["sha256"])
+                    self._emit(progress, stage=label, message=f"Completing {label}: {item['renamed']}", current=i, total=len(files), bytes_done=i, bytes_total=len(files), rate_bps=0)
+                self._verify_folder_count(folder, len(files))
+                manifest["backups"][label] = {"path": str(folder), "status": "verified"}
+                self._write_manifest_copy(folder, manifest)
+                self.storage.save_manifest(job_id, manifest)
             manifest.setdefault("backups", {}).setdefault("dropbox", {"path": f"{DROPBOX_DESTINATION}/{folder_name}", "status": "pending", "uploaded": []})
+            manifest["status"] = "verified_2_of_2_dropbox_pending"
             self.storage.save_manifest(job_id, manifest)
             row = self.storage.get_job(job_id)
             manifest_path = Path(row["manifest_path"]) if row else self.storage.save_manifest(job_id, manifest)
@@ -1037,47 +688,18 @@ class BackupEngine:
         files = manifest.get("selected_files", [])
         if not files:
             raise BackupError("SD deletion blocked: no verified files in manifest")
-
-        if manifest.get("backup_mode") == "auto_correct":
-            backups = manifest.get("backups", {})
-
-            b2 = backups.get("backup2", {})
-            if b2.get("status") != "verified":
-                raise BackupError("SD deletion blocked: Backup 2 originals are not verified")
-            b2_folder = Path(b2.get("path", ""))
-            if not b2_folder.exists():
-                raise BackupError("SD deletion blocked: connection lost to Backup 2")
-            self._verify_manifest_files(b2_folder, files)
-            self._verify_folder_count(b2_folder, len(files))
-
-            staging = backups.get("staging", {})
-            cloud = backups.get("dropbox", {})
-            if staging.get("status") == "verified":
-                staging_folder = Path(staging.get("path", ""))
-                if not staging_folder.exists():
-                    raise BackupError("SD deletion blocked: temporary original safety copy is not reachable")
-                self._verify_manifest_files(staging_folder, files)
-                self._verify_folder_count(staging_folder, len(files))
-                if path_network_identity(b2_folder) == path_network_identity(staging_folder):
-                    raise BackupError("SD deletion blocked: the two exact original copies are on the same drive/share")
-            elif cloud.get("status") == "verified":
-                # Dropbox verification uses Dropbox content hash + exact byte size for
-                # every original. It safely replaces the temporary staging copy once
-                # that staging folder is cleaned.
-                pass
-            else:
-                raise BackupError("SD deletion blocked: neither temporary originals nor Dropbox originals are verified")
-        else:
-            for key in ("backup1", "backup2"):
-                info = manifest.get("backups", {}).get(key, {})
-                if info.get("status") != "verified":
-                    raise BackupError(f"SD deletion blocked: {key} is not verified")
-                folder = Path(info.get("path", ""))
-                if not folder.exists():
-                    raise BackupError(f"SD deletion blocked: connection lost to {key}")
-                self._verify_manifest_files(folder, files)
-                self._verify_folder_count(folder, len(files))
-
+        for key in ("backup1", "backup2"):
+            info = manifest.get("backups", {}).get(key, {})
+            if info.get("status") != "verified":
+                raise BackupError(f"SD deletion blocked: {key} is not verified")
+            folder = Path(info.get("path", ""))
+            if not folder.exists():
+                raise BackupError(f"SD deletion blocked: connection lost to {key}")
+            self._verify_folder_count(folder, len(files))
+            for item in files:
+                p = folder / item["renamed"]
+                if not p.exists() or p.stat().st_size != item["size"]:
+                    raise BackupError(f"SD deletion blocked: {key} file missing or wrong size: {item['renamed']}")
         self._delete_selected_originals(manifest)
 
     def _delete_selected_originals(self, manifest: dict[str, Any]) -> None:
