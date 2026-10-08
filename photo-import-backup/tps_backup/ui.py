@@ -1162,6 +1162,78 @@ class TPSApp(tk.Tk):
                     if hasattr(self, "backup_status_labels"):
                         self.backup_status_labels[3].configure(text="Pending • will retry later", fg=ORANGE)
                     self.refresh_history()
+                elif kind == "reference_sync_done":
+                    data, show_result = payload
+                    self.reference_sync_busy = False
+                    self.load_reference_data()
+                    if hasattr(self, "people_tree"):
+                        self.refresh_admin_people()
+                        self.refresh_admin_events()
+                    self.refresh_reference_sync_status()
+                    if show_result:
+                        messagebox.showinfo(
+                            "Shared lists synced",
+                            f"Photographers and Events are synced across devices.\n\nRevision: {int(data.get('revision') or 0)}",
+                            parent=self,
+                        )
+                elif kind == "reference_sync_error":
+                    err, show_result = payload
+                    self.reference_sync_busy = False
+                    self.refresh_reference_sync_status(
+                        "Photographers + Events • offline • using local cache",
+                        ORANGE,
+                    )
+                    if show_result:
+                        messagebox.showwarning(
+                            "Shared lists offline",
+                            f"Could not reach the central Photographers / Events list.\n\n{err}\n\n"
+                            "This computer will keep using its last synced local copy.",
+                            parent=self,
+                        )
+                elif kind == "reference_save_done":
+                    data = payload
+                    self.reference_sync_busy = False
+                    self.load_reference_data()
+                    self.refresh_admin_people()
+                    self.refresh_admin_events()
+                    self.refresh_reference_sync_status()
+                    self.set_banner("Shared Photographers and Events updated across devices ✓", GREEN)
+                elif kind == "reference_save_conflict":
+                    self.reference_sync_busy = False
+                    try:
+                        self.reference_sync.apply_server_copy(payload)
+                    except Exception:
+                        pass
+                    self.load_reference_data()
+                    self.refresh_admin_people()
+                    self.refresh_admin_events()
+                    self.refresh_reference_sync_status(
+                        "Photographers + Events • refreshed after another computer changed them",
+                        ORANGE,
+                    )
+                    messagebox.showwarning(
+                        "Shared list changed on another computer",
+                        "Another TPS computer updated the Photographers / Events list first.\n\n"
+                        "This computer has refreshed to the latest shared version. Please make your change again if it is still required.",
+                        parent=self,
+                    )
+                elif kind == "reference_save_error":
+                    err, old_people, old_events = payload
+                    self.reference_sync_busy = False
+                    self.storage.set_setting("photographers", old_people)
+                    self.storage.set_setting("events", old_events)
+                    self.load_reference_data()
+                    self.refresh_admin_people()
+                    self.refresh_admin_events()
+                    self.refresh_reference_sync_status(
+                        "Photographers + Events • save failed • shared list unchanged",
+                        RED,
+                    )
+                    messagebox.showerror(
+                        "Shared list not saved",
+                        f"The change was not saved centrally and has been rolled back on this computer.\n\n{err}",
+                        parent=self,
+                    )
                 elif kind == "eventlog_test":
                     ok, msg = payload
                     if hasattr(self, "eventlog_admin_status"):
@@ -1766,6 +1838,7 @@ class TPSApp(tk.Tk):
             self.dropbox_app_key_var.set(self.storage.get_setting("dropbox_app_key", ""))
             self.refresh_dropbox_admin_status()
             self.refresh_eventlog_admin_status()
+            self.refresh_reference_sync_status()
             self.refresh_admin_people()
             self.refresh_admin_events()
 
