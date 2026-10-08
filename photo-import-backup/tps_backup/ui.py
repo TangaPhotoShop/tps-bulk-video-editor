@@ -205,6 +205,7 @@ class TPSApp(tk.Tk):
         self.dropbox = DropboxBackupClient(self.storage)
         self.reference_sync = ReferenceDataClient(self.storage)
         self.reference_sync_busy = False
+        self.reference_sync_after_id = None
         self.dropbox_thread = None
         self.dropbox_stop_event = threading.Event()
         self.dropbox_current_job_id = None
@@ -1170,6 +1171,7 @@ class TPSApp(tk.Tk):
                         self.refresh_admin_people()
                         self.refresh_admin_events()
                     self.refresh_reference_sync_status()
+                    self.schedule_reference_sync()
                     if show_result:
                         messagebox.showinfo(
                             "Shared lists synced",
@@ -1183,6 +1185,7 @@ class TPSApp(tk.Tk):
                         "Photographers + Events • offline • using local cache",
                         ORANGE,
                     )
+                    self.schedule_reference_sync(120000)
                     if show_result:
                         messagebox.showwarning(
                             "Shared lists offline",
@@ -1197,6 +1200,7 @@ class TPSApp(tk.Tk):
                     self.refresh_admin_people()
                     self.refresh_admin_events()
                     self.refresh_reference_sync_status()
+                    self.schedule_reference_sync()
                     self.set_banner("Shared Photographers and Events updated across devices ✓", GREEN)
                 elif kind == "reference_save_conflict":
                     self.reference_sync_busy = False
@@ -1211,6 +1215,7 @@ class TPSApp(tk.Tk):
                         "Photographers + Events • refreshed after another computer changed them",
                         ORANGE,
                     )
+                    self.schedule_reference_sync()
                     messagebox.showwarning(
                         "Shared list changed on another computer",
                         "Another TPS computer updated the Photographers / Events list first.\n\n"
@@ -1229,6 +1234,7 @@ class TPSApp(tk.Tk):
                         "Photographers + Events • save failed • shared list unchanged",
                         RED,
                     )
+                    self.schedule_reference_sync(120000)
                     messagebox.showerror(
                         "Shared list not saved",
                         f"The change was not saved centrally and has been rolled back on this computer.\n\n{err}",
@@ -1859,6 +1865,17 @@ class TPSApp(tk.Tk):
                 text="Photographers + Events • local cache • awaiting first sync",
                 fg=ORANGE,
             )
+
+    def schedule_reference_sync(self, delay_ms: int = 300000):
+        """Refresh shared Photographers/Events periodically while the app stays open."""
+        if self.closing:
+            return
+        if self.reference_sync_after_id is not None:
+            try:
+                self.after_cancel(self.reference_sync_after_id)
+            except Exception:
+                pass
+        self.reference_sync_after_id = self.after(delay_ms, self.auto_sync_reference_data)
 
     def auto_sync_reference_data(self, show_result: bool = False):
         if self.closing:
