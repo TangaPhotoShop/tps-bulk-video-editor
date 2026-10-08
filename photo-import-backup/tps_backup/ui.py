@@ -1999,6 +1999,26 @@ class TPSApp(tk.Tk):
         if hasattr(self, "backup_status_labels"):
             self.backup_status_labels[3].configure(text="Not connected • cloud backups remain pending", fg=ORANGE)
 
+    def start_autocorrect_for_job(self, job_id: str):
+        if self.autocorrect_thread and self.autocorrect_thread.is_alive():
+            return
+
+        def progress(ev: ProgressEvent):
+            self.msg_queue.put(("autocorrect_progress", (job_id, ev)))
+
+        def worker():
+            windows_keep_awake(True)
+            try:
+                self.engine.build_autocorrect_backup1(job_id, progress)
+                self.msg_queue.put(("autocorrect_done", job_id))
+            except Exception as exc:
+                self.msg_queue.put(("autocorrect_error", (job_id, str(exc))))
+            finally:
+                windows_keep_awake(False)
+
+        self.autocorrect_thread = threading.Thread(target=worker, daemon=True, name="TPSAutoCorrect")
+        self.autocorrect_thread.start()
+
     def start_dropbox_for_job(self, job_id: str):
         if not self.dropbox.configured():
             return
@@ -2047,8 +2067,19 @@ class TPSApp(tk.Tk):
 
     def on_close(self):
         cloud_running = bool(self.dropbox_thread and self.dropbox_thread.is_alive())
+        autocorrect_running = bool(self.autocorrect_thread and self.autocorrect_thread.is_alive())
         msg = "Exit the application?"
-        if cloud_running:
-            msg = "A Dropbox upload is still in progress.\n\nYou can still exit safely: both local backups are already verified and the Dropbox upload will resume next time the app starts.\n\nExit now?"
+        if cloud_running or autocorrect_running:
+            active = []
+            if autocorrect_running:
+                active.append("Backup 1 Auto Correct")
+            if cloud_running:
+                active.append("Dropbox upload")
+            msg = (
+                f"{' and '.join(active)} is still in progress.\n\n"
+                "Untouched originals remain safe in Backup 2 / the original-safety workflow. "
+                "Dropbox jobs resume automatically next launch; Auto Correct can always be rebuilt from Backup 2.\n\n"
+                "Exit now?"
+            )
         if messagebox.askokcancel("Exit TPS Photo Import", msg, parent=self):
             self.destroy()
