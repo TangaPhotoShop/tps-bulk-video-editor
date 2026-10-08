@@ -39,6 +39,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "dropbox_destination": "/TPS/TOUR PHOTO BACKUPS/From TEMP CLOUD FOLDER",
     "dropbox_enabled": True,
     "delete_after_verified_default": False,
+    "reference_revision": 0,
+    "reference_updated_at": "",
+    "reference_last_sync_at": "",
     "photographers": [
         {"name": "Steve", "initials": "SW"},
         {"name": "Pete", "initials": "PD"},
