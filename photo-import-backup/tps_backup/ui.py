@@ -974,6 +974,11 @@ class TPSApp(tk.Tk):
         quantity_value = self.guests_var.get().strip() or "Not entered"
         notes = self.notes_var.get().strip() or "None"
         issue = self.issue_var.get().strip() or "No issues"
+        backup_mode_text = (
+            "Backup 1 Auto Correct working copies + Backup 2 untouched originals"
+            if self.is_autocorrect_mode()
+            else "Backup 1 + Backup 2 exact originals"
+        )
 
         summary = (
             "Please confirm these event details before the backup starts:\n\n"
@@ -986,6 +991,7 @@ class TPSApp(tk.Tk):
             f"Issue / notes: {notes}\n\n"
             f"Photos selected: {len(selected)}\n"
             f"Photos excluded: {excluded}\n"
+            f"Backup mode: {backup_mode_text}\n"
             f"Delete imported SD files after verification: {'Yes — final confirmation will still be required' if self.delete_var.get() else 'No'}\n\n"
             "Are these details correct and ready to back up?"
         )
@@ -2004,11 +2010,14 @@ class TPSApp(tk.Tk):
         checks = self.engine.preflight_all(1024 * 1024)
         lines = []
         for key in ("backup1","backup2"):
-            ok, msg, free = checks[key]
+            ok, msg, free = checks.get(key, (False, "Not available", 0))
             lines.append(f"{key.upper()}: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
+        if self.is_autocorrect_mode():
+            ok, msg, free = checks.get("staging", (False, "Not available", 0))
+            lines.append(f"TEMP ORIGINAL SAFETY: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
         epath = self.storage.get_setting("emergency_path", "")
         ok, msg, free = self.engine.preflight_path(epath, 1024 * 1024)
-        lines.append(f"EMERGENCY: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
+        lines.append(f"EMERGENCY ROOT: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
         messagebox.showinfo("Backup location test", "\n".join(lines), parent=self)
 
     def admin_speed_test(self):
