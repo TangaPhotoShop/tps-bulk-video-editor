@@ -189,8 +189,10 @@ class BackupEngine:
         return "auto_correct" if mode == "auto_correct" else "original"
 
     def staging_base(self) -> Path:
-        emergency = Path(self.storage.get_setting("emergency_path", "") or "")
-        return emergency / "_TPS_TEMP_ORIGINAL_STAGING"
+        raw = str(self.storage.get_setting("emergency_path", "") or "").strip()
+        if not raw:
+            raise BackupError("Emergency / temporary safety location is not configured")
+        return Path(raw) / "_TPS_TEMP_ORIGINAL_STAGING"
 
     def preflight_all(self, required_bytes: int) -> dict[str, tuple[bool, str, int]]:
         """Preflight active destinations for the selected Backup 1 mode."""
@@ -758,8 +760,11 @@ class BackupEngine:
             if existing and dest.exists() and dest.stat().st_size == existing.get("size") and sha256_file(dest) == existing.get("sha256"):
                 self._emit(progress, stage="autocorrect", message=f"Auto Correct: {item['renamed']}", current=idx, total=len(files), bytes_done=idx, bytes_total=len(files), rate_bps=0)
                 continue
-            if dest.exists() and not existing:
-                raise BackupError(f"Backup 1 already contains an untracked file: {dest.name}")
+            # Backup 1 is derived working data only. If a previous correction was
+            # interrupted between file-save and manifest-save, safely rebuild that
+            # working JPEG from untouched Backup 2 originals.
+            if dest.exists():
+                dest.unlink()
 
             result = auto_correct_jpeg(src, dest, event_code)
             corrected[item["renamed"]] = {
