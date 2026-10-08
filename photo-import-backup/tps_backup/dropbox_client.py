@@ -324,7 +324,12 @@ class DropboxBackupClient:
                 continue
             backups = manifest.get("backups", {})
             if manifest.get("backup_mode") == "auto_correct":
-                if backups.get("backup2", {}).get("status") == "verified" and backups.get("staging", {}).get("status") == "verified":
+                b1_state = backups.get("backup1", {}).get("status")
+                if (
+                    backups.get("backup2", {}).get("status") == "verified"
+                    and backups.get("staging", {}).get("status") == "verified"
+                    and b1_state in {"autocorrect_verified", "autocorrect_failed"}
+                ):
                     pending.append(row["id"])
             elif row.get("primary_status") == "verified" and row.get("backup2_status") == "verified":
                 pending.append(row["id"])
