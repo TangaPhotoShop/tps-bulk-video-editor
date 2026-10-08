@@ -543,54 +543,59 @@ class TPSApp(tk.Tk):
         ttk.Entry(rangebar, textvariable=self.range_end, width=8).pack(side="left", padx=4)
         ttk.Button(rangebar, text="Select range", style="Secondary.TButton", command=self.select_range).pack(side="left", padx=6)
 
-        # Right: preview + backup readiness
+        # Right: preview + backup readiness.
+        # The preview is the flexible area. Backup controls and final action buttons
+        # keep their requested height so BACK UP & COMPLETE is never clipped on
+        # shorter screens or with Windows display scaling above 100%.
         right = tk.Frame(body, bg=BG)
         right.grid(row=1, column=1, sticky="nsew", padx=(8, 0))
         right.grid_columnconfigure(0, weight=1)
-        right.grid_rowconfigure(0, weight=1, minsize=330)
+        right.grid_rowconfigure(0, weight=1, minsize=150)
+        right.grid_rowconfigure(1, weight=0)
 
         preview = tk.Frame(right, bg=CARD, highlightbackground=LINE, highlightthickness=1)
-        preview.grid(row=0, column=0, sticky="nsew", pady=(0, 12))
+        preview.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
         preview.grid_columnconfigure(0, weight=1)
         preview.grid_rowconfigure(1, weight=1)
-        tk.Label(preview, text="PREVIEW", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
-        self.preview_canvas = tk.Canvas(preview, bg="#1C252A", highlightthickness=0, height=330)
-        self.preview_canvas.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 10))
+        tk.Label(preview, text="PREVIEW", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=14, pady=(10, 5))
+        self.preview_canvas = tk.Canvas(preview, bg="#1C252A", highlightthickness=0, height=145)
+        self.preview_canvas.grid(row=1, column=0, sticky="nsew", padx=14, pady=(0, 6))
         self.preview_canvas.bind("<Configure>", self._on_preview_resize)
         self.preview_canvas.create_text(10, 10, anchor="nw", text="Select a photo to preview", fill="#9AA7AC", font=("Segoe UI", 10))
         self.preview_name = tk.Label(preview, text="", bg=CARD, fg=MUTED, font=("Segoe UI", 8))
-        self.preview_name.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 12))
+        self.preview_name.grid(row=2, column=0, sticky="w", padx=14, pady=(0, 7))
 
         backup = tk.Frame(right, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         backup.grid(row=1, column=0, sticky="ew")
         backup.grid_columnconfigure(0, weight=1)
-        tk.Label(backup, text="BACKUP READINESS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
+        tk.Label(backup, text="BACKUP READINESS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=14, pady=(9, 5))
         self.backup_status_labels = {}
         self.backup_name_labels = {}
         for i, label in enumerate(("Backup 1", "Backup 2", "Dropbox"), start=1):
             row = tk.Frame(backup, bg=CARD)
-            row.grid(row=i, column=0, sticky="ew", padx=16, pady=2)
+            row.grid(row=i, column=0, sticky="ew", padx=14, pady=1)
             name_label = tk.Label(row, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9))
             name_label.pack(side="left")
             status = tk.Label(row, text="Not checked", bg=CARD, fg=MUTED, font=("Segoe UI", 9))
             status.pack(side="right")
             self.backup_name_labels[i] = name_label
             self.backup_status_labels[i] = status
-        ttk.Button(backup, text="Check network now", style="Secondary.TButton", command=self.check_network).grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 12))
+        ttk.Button(backup, text="Check network now", style="Secondary.TButton", command=self.check_network).grid(row=4, column=0, sticky="ew", padx=14, pady=(6, 7))
 
         self.delete_var = tk.BooleanVar(value=bool(self.storage.get_setting("delete_after_verified_default", False)))
-        ttk.Checkbutton(backup, text="Delete imported files from SD after 2/2 local verification", variable=self.delete_var).grid(row=5, column=0, sticky="w", padx=16, pady=(0, 10))
+        ttk.Checkbutton(backup, text="Delete imported files from SD after 2/2 local verification", variable=self.delete_var).grid(row=5, column=0, sticky="w", padx=14, pady=(0, 5))
 
         self.folder_preview = tk.Label(backup, text="Folder preview: —", bg=CARD, fg=MUTED, anchor="w", justify="left", font=("Consolas", 8))
-        self.folder_preview.grid(row=6, column=0, sticky="ew", padx=16, pady=(0, 10))
+        self.folder_preview.grid(row=6, column=0, sticky="ew", padx=14, pady=(0, 5))
 
         self.progress = ttk.Progressbar(backup, mode="determinate", style="Horizontal.TProgressbar")
-        self.progress.grid(row=7, column=0, sticky="ew", padx=16, pady=(0, 6))
+        self.progress.grid(row=7, column=0, sticky="ew", padx=14, pady=(0, 3))
         self.progress_text = tk.Label(backup, text="", bg=CARD, fg=MUTED, font=("Segoe UI", 8))
-        self.progress_text.grid(row=8, column=0, sticky="w", padx=16)
+        self.progress_text.grid(row=8, column=0, sticky="w", padx=14)
 
+        # Fixed action row: always remains inside the visible backup card.
         btns = tk.Frame(backup, bg=CARD)
-        btns.grid(row=9, column=0, sticky="ew", padx=16, pady=(12, 16))
+        btns.grid(row=9, column=0, sticky="ew", padx=14, pady=(7, 10))
         btns.grid_columnconfigure(0, weight=1)
         btns.grid_columnconfigure(1, weight=1)
         self.emergency_btn = ttk.Button(btns, text="EMERGENCY BACKUP", style="Secondary.TButton", command=lambda: self.start_backup(emergency=True))
