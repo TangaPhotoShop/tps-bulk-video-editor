@@ -198,8 +198,8 @@ class BackupEngine:
         """Preflight active destinations for the selected Backup 1 mode."""
         mode = self.backup1_mode()
         if mode == "auto_correct":
-            staging = self.staging_base()
             try:
+                staging = self.staging_base()
                 staging.mkdir(parents=True, exist_ok=True)
             except Exception as exc:
                 return {
