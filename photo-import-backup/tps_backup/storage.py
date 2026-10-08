@@ -28,7 +28,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "backup1_path": "",
     "backup2_path": "",
     "emergency_path": str(Path.home() / "TPS Emergency Photo Backup"),
-    "backup1_mode": "auto_correct",
     "eventlog_url": "https://tps-event-log-import-api-production.up.railway.app/api/photo-import",
     "eventlog_api_key": "gkq-yDOoj8rao_HLsN4cPovcMBJXKb5aRpM-l8s5eSc",
     "eventlog_enabled": True,
