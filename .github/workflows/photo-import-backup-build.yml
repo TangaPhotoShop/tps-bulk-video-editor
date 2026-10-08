@@ -26,7 +26,7 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Create pixel-sharp SD-card app icon
+      - name: Create sharp SD-card TPS app icon
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path assets -Force | Out-Null
@@ -36,65 +36,103 @@ jobs:
           import io
           import struct
           from pathlib import Path
-          from PIL import Image, ImageDraw
+          from PIL import Image, ImageDraw, ImageFont
 
-          # Unique TPS Photo Import identity: electric indigo + white SD card + lime backup arrow.
-          INDIGO = (51, 61, 196, 255)
-          INDIGO_DARK = (27, 31, 112, 255)
+          CARD = (17, 33, 48, 255)
+          CARD_EDGE = (5, 15, 24, 255)
+          LABEL = (0, 119, 182, 255)
+          LABEL_DARK = (0, 76, 122, 255)
           WHITE = (255, 255, 255, 255)
-          LIME = (205, 255, 72, 255)
+          GOLD = (242, 184, 66, 255)
+
+          FONT = Path("C:/Windows/Fonts/arialbd.ttf")
+
+          def font(px: int):
+              try:
+                  return ImageFont.truetype(str(FONT), max(5, px))
+              except Exception:
+                  return ImageFont.load_default()
+
+          def draw_card(d, size: int, inset: int):
+              x0 = inset
+              y0 = inset
+              x1 = size - inset
+              y1 = size - inset
+              cut = max(2, int(size * 0.17))
+              pts = [
+                  (x0, y0),
+                  (x1 - cut, y0),
+                  (x1, y0 + cut),
+                  (x1, y1),
+                  (x0, y1),
+              ]
+              d.polygon(pts, fill=CARD, outline=CARD_EDGE)
 
           def make_small(size: int) -> Image.Image:
-              # Tiny icons are drawn directly at their native size: no large artwork scaled down.
-              im = Image.new("RGBA", (size, size), INDIGO)
+              # Native-size drawing avoids blur at 16-24 px.
+              im = Image.new("RGBA", (size, size), (0,0,0,0))
               d = ImageDraw.Draw(im)
-              m = max(1, size // 8)
-              # SD card body.
-              x0, y0 = m + 1, m + 1
-              x1, y1 = int(size * .68), size - m - 1
-              cut = max(2, size // 5)
-              card = [(x0, y0), (x1-cut, y0), (x1, y0+cut), (x1, y1), (x0, y1)]
-              d.polygon(card, fill=WHITE)
-              # Card contacts.
-              contact_y0 = y0 + max(2, size // 9)
-              contact_y1 = contact_y0 + max(1, size // 8)
-              for cx in range(x0 + 2, max(x0 + 3, x1-cut-1), max(2, size // 7)):
-                  d.rectangle((cx, contact_y0, min(cx+1, x1-1), contact_y1), fill=INDIGO_DARK)
-              # Bold lime backup arrow on right.
-              ax = int(size * .73)
-              d.rectangle((ax, int(size*.45), min(size-2, ax+max(1,size//8)), int(size*.78)), fill=LIME)
-              d.polygon([
-                  (int(size*.63), int(size*.51)),
-                  (int(size*.78), int(size*.34)),
-                  (int(size*.93), int(size*.51)),
-              ], fill=LIME)
+              inset = max(1, size // 16)
+              draw_card(d, size, inset)
+
+              # Gold SD contacts.
+              top = max(2, int(size * .14))
+              bottom = max(top + 1, int(size * .28))
+              left = max(2, int(size * .16))
+              right = int(size * .70)
+              count = 4 if size <= 20 else 5
+              gap = max(1, (right-left)//(count*2))
+              w = max(1, gap)
+              x = left
+              for _ in range(count):
+                  d.rectangle((x, top, min(x+w, right), bottom), fill=GOLD)
+                  x += w + gap
+
+              # White TPS is the only internal mark at tiny sizes.
+              f = font(int(size * .31))
+              bbox = d.textbbox((0,0), "TPS", font=f)
+              tw = bbox[2]-bbox[0]
+              th = bbox[3]-bbox[1]
+              tx = (size - tw)//2
+              ty = int(size * .60) - th//2
+              d.text((tx, ty), "TPS", font=f, fill=WHITE)
               return im
 
           def make_large(size: int) -> Image.Image:
+              # Large sizes render at 4x then downsample for clean curves.
               scale = 4
               s = size * scale
-              def p(v): return int(round(v * s))
-              im = Image.new("RGBA", (s, s), INDIGO)
+              im = Image.new("RGBA", (s, s), (0,0,0,0))
               d = ImageDraw.Draw(im)
-              # SD card dominates the icon.
-              card = [(p(.12),p(.18)),(p(.56),p(.18)),(p(.70),p(.32)),(p(.70),p(.82)),(p(.12),p(.82))]
-              d.polygon(card, fill=WHITE)
-              d.polygon([(p(.56),p(.18)),(p(.56),p(.32)),(p(.70),p(.32))], fill=INDIGO_DARK)
-              # Contacts.
-              for x in (.19,.28,.37,.46,.55):
-                  d.rounded_rectangle((p(x),p(.235),p(x+.045),p(.34)), radius=p(.01), fill=INDIGO_DARK)
-              # Photo glyph inside SD card.
-              d.rounded_rectangle((p(.20),p(.43),p(.61),p(.71)), radius=p(.035), fill=INDIGO_DARK)
-              d.ellipse((p(.25),p(.48),p(.33),p(.56)), fill=WHITE)
-              d.polygon([(p(.23),p(.68)),(p(.36),p(.56)),(p(.46),p(.65)),(p(.53),p(.58)),(p(.60),p(.68))], fill=WHITE)
-              # Simple cloud in top-right.
-              d.ellipse((p(.63),p(.12),p(.78),p(.27)), fill=WHITE)
-              d.ellipse((p(.72),p(.08),p(.90),p(.28)), fill=WHITE)
-              d.ellipse((p(.83),p(.15),p(.96),p(.29)), fill=WHITE)
-              d.rectangle((p(.67),p(.21),p(.93),p(.29)), fill=WHITE)
-              # Large lime upload arrow.
-              d.rounded_rectangle((p(.75),p(.43),p(.83),p(.79)), radius=p(.015), fill=LIME)
-              d.polygon([(p(.64),p(.50)),(p(.79),p(.34)),(p(.94),p(.50))], fill=LIME)
+              inset = max(4, int(s * .045))
+              draw_card(d, s, inset)
+
+              # SD contacts.
+              top = int(s * .105)
+              bottom = int(s * .255)
+              left = int(s * .135)
+              right = int(s * .69)
+              count = 6
+              gap = int(s * .018)
+              w = int((right-left - gap*(count-1))/count)
+              for i in range(count):
+                  x0 = left + i*(w+gap)
+                  d.rounded_rectangle((x0, top, x0+w, bottom), radius=max(1,int(s*.012)), fill=GOLD)
+
+              # Blue label panel.
+              lx0, ly0 = int(s*.12), int(s*.37)
+              lx1, ly1 = int(s*.84), int(s*.82)
+              d.rounded_rectangle((lx0,ly0,lx1,ly1), radius=int(s*.055), fill=LABEL, outline=LABEL_DARK, width=max(2,int(s*.012)))
+
+              # Large centered TPS letters.
+              f = font(int(s * .245))
+              bbox = d.textbbox((0,0), "TPS", font=f)
+              tw = bbox[2]-bbox[0]
+              th = bbox[3]-bbox[1]
+              tx = (s-tw)//2
+              ty = int(s*.59) - th//2
+              d.text((tx,ty), "TPS", font=f, fill=WHITE)
+
               return im.resize((size,size), Image.Resampling.LANCZOS)
 
           def make(size: int) -> Image.Image:
@@ -113,27 +151,23 @@ jobs:
               entries = []
               for size, blob in zip(sizes, blobs):
                   wh = 0 if size >= 256 else size
-                  entries.append(struct.pack(
-                      "<BBBBHHII",
-                      wh, wh, 0, 0, 1, 32, len(blob), offset
-                  ))
+                  entries.append(struct.pack("<BBBBHHII", wh, wh, 0, 0, 1, 32, len(blob), offset))
                   offset += len(blob)
               Path(path).write_bytes(header + b"".join(entries) + b"".join(blobs))
 
-          sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256]
+          sizes = [16,20,24,32,40,48,64,128,256]
           make(256).save("assets/tps_photo_backup.png")
           make_large(1024).save("assets/tps_photo_backup_1024.png")
           write_ico("assets/tps_photo_backup.ico", sizes)
-          write_ico("assets/favicon.ico", [16, 24, 32, 48])
+          write_ico("assets/favicon.ico", [16,24,32,48])
 
-          # Sanity-check that every requested size exists as a real ICO frame.
           ico = Image.open("assets/tps_photo_backup.ico")
           available = set(ico.info.get("sizes", []))
-          expected = {(s, s) for s in sizes}
+          expected = {(s,s) for s in sizes}
           missing = expected - available
           if missing:
               raise SystemExit(f"ICO missing sizes: {sorted(missing)}")
-          print("ICO sizes:", sorted(available))
+          print("SD-card TPS ICO sizes:", sorted(available))
           '@ | Set-Content -Encoding UTF8 make_icon.py
           python make_icon.py
 
@@ -203,10 +237,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TPS-Photo-Import-Backup-Windows-v1.2.4
+          name: TPS-Photo-Import-Backup-Windows-v1.2.5
           path: |
             photo-import-backup/dist/TPS Photo Import & Backup.exe
-            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.2.4.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.2.5.exe
           if-no-files-found: error
 
-# v1.2.4 exact originals + pixel-sharp SD-card icon
+# v1.2.5 SD-card TPS icon + explicit confirmation + clean reset
