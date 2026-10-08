@@ -1141,6 +1141,9 @@ class TPSApp(tk.Tk):
                         self.backup_status_labels[3].configure(text="Cloud backup verified ✓", fg=GREEN)
                     self.refresh_history()
                     self.set_banner("2/2 LOCAL VERIFIED + DROPBOX VERIFIED ✓", GREEN)
+                    # If another completed job was queued while this one uploaded,
+                    # pick it up automatically after the worker has fully exited.
+                    self.after(500, self.start_pending_dropbox_sync)
                 elif kind == "dropbox_error":
                     job_id, err = payload
                     if hasattr(self, "backup_status_labels"):
