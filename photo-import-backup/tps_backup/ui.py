@@ -240,6 +240,7 @@ class TPSApp(tk.Tk):
         self.after(1000, self.auto_check_connections_on_load)
         self.after(1800, self.start_pending_dropbox_sync)
         self.after(2600, self.auto_sync_eventlog_queue)
+        self.after(3400, self.start_pending_autocorrect_sync)
 
     def _style(self):
         style = ttk.Style(self)
@@ -2091,6 +2092,38 @@ class TPSApp(tk.Tk):
         self.autocorrect_thread = threading.Thread(target=worker, daemon=True, name="TPSAutoCorrect")
         self.autocorrect_thread.start()
 
+    def start_pending_autocorrect_sync(self):
+        if self.autocorrect_thread and self.autocorrect_thread.is_alive():
+            return
+        pending = []
+        for row in self.storage.list_jobs(limit=100):
+            manifest = self.storage.load_manifest(row["id"])
+            if not manifest or manifest.get("backup_mode") != "auto_correct":
+                continue
+            backups = manifest.get("backups", {})
+            if backups.get("backup2", {}).get("status") == "verified" and backups.get("backup1", {}).get("status") != "autocorrect_verified":
+                pending.append(row["id"])
+        if not pending:
+            return
+
+        def worker():
+            windows_keep_awake(True)
+            try:
+                for job_id in pending:
+                    def progress(ev: ProgressEvent, jid=job_id):
+                        self.msg_queue.put(("autocorrect_progress", (jid, ev)))
+                    try:
+                        self.engine.build_autocorrect_backup1(job_id, progress)
+                        self.msg_queue.put(("autocorrect_done", job_id))
+                    except Exception as exc:
+                        self.msg_queue.put(("autocorrect_error", (job_id, str(exc))))
+                        break
+            finally:
+                windows_keep_awake(False)
+
+        self.autocorrect_thread = threading.Thread(target=worker, daemon=True, name="TPSAutoCorrectPending")
+        self.autocorrect_thread.start()
+
     def start_dropbox_for_job(self, job_id: str):
         if not self.dropbox.configured():
             return
@@ -2150,7 +2183,7 @@ class TPSApp(tk.Tk):
             msg = (
                 f"{' and '.join(active)} is still in progress.\n\n"
                 "Untouched originals remain safe in Backup 2 / the original-safety workflow. "
-                "Dropbox jobs resume automatically next launch; Auto Correct can always be rebuilt from Backup 2.\n\n"
+                "Dropbox and Auto Correct jobs resume automatically next launch from the verified originals.\n\n"
                 "Exit now?"
             )
         if messagebox.askokcancel("Exit TPS Photo Import", msg, parent=self):
