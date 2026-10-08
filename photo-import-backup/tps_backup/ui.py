@@ -202,7 +202,6 @@ class TPSApp(tk.Tk):
         self.engine = BackupEngine(self.storage)
         self.dropbox = DropboxBackupClient(self.storage)
         self.dropbox_thread = None
-        self.autocorrect_thread = None
         self.msg_queue: queue.Queue = queue.Queue()
         self.current_page = "import"
         self.photo_image = None
@@ -238,9 +237,8 @@ class TPSApp(tk.Tk):
         self.after(300, self.poll_queue)
         self.after(700, lambda: self.monitor_sd_cards(initial=True))
         self.after(1000, self.auto_check_connections_on_load)
-        self.after(1800, self.start_pending_autocorrect_sync)
+        self.after(1800, self.start_pending_dropbox_sync)
         self.after(2600, self.auto_sync_eventlog_queue)
-        self.after(4200, self.start_pending_dropbox_sync)
 
     def _style(self):
         style = ttk.Style(self)
@@ -559,15 +557,12 @@ class TPSApp(tk.Tk):
         backup.grid_columnconfigure(0, weight=1)
         tk.Label(backup, text="BACKUP READINESS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
         self.backup_status_labels = {}
-        self.backup_name_labels = {}
-        for i, label in enumerate(("Backup 1", "Backup 2", "Dropbox cloud"), start=1):
+        for i, label in enumerate(("Primary backup", "Backup 2", "Dropbox cloud"), start=1):
             row = tk.Frame(backup, bg=CARD)
             row.grid(row=i, column=0, sticky="ew", padx=16, pady=2)
-            name_label = tk.Label(row, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9))
-            name_label.pack(side="left")
+            tk.Label(row, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).pack(side="left")
             status = tk.Label(row, text="Not checked", bg=CARD, fg=MUTED, font=("Segoe UI", 9))
             status.pack(side="right")
-            self.backup_name_labels[i] = name_label
             self.backup_status_labels[i] = status
         ttk.Button(backup, text="Check network now", style="Secondary.TButton", command=self.check_network).grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 12))
 
@@ -595,22 +590,6 @@ class TPSApp(tk.Tk):
         for var in (self.date_var, self.initials_var, self.event_var, self.time_var):
             var.trace_add("write", lambda *_: self.update_folder_preview())
         self.update_folder_preview()
-        self.update_backup_mode_labels()
-
-    def is_autocorrect_mode(self) -> bool:
-        return str(self.storage.get_setting("backup1_mode", "original") or "original").lower() == "auto_correct"
-
-    def update_backup_mode_labels(self):
-        if not hasattr(self, "backup_name_labels"):
-            return
-        if self.is_autocorrect_mode():
-            self.backup_name_labels[1].configure(text="Backup 1 — working Auto Correct")
-            self.backup_name_labels[2].configure(text="Backup 2 — original archive + temp safety")
-            self.backup_name_labels[3].configure(text="Dropbox — original cloud archive")
-        else:
-            self.backup_name_labels[1].configure(text="Backup 1 — exact originals")
-            self.backup_name_labels[2].configure(text="Backup 2 — exact originals")
-            self.backup_name_labels[3].configure(text="Dropbox cloud")
 
     def load_reference_data(self):
         photographers = self.storage.get_setting("photographers", [])
@@ -882,49 +861,21 @@ class TPSApp(tk.Tk):
         return sum(p.size for p in getattr(self, "photos", []) if p.selected)
 
     def check_network(self):
-        total = max(self.selected_bytes(), 1)
-        self.update_backup_mode_labels()
-        auto_mode = self.is_autocorrect_mode()
-        self.set_banner("Checking required backup locations…", BLUE)
+        total = self.selected_bytes()
+        if total <= 0:
+            total = 1
+        self.set_banner("Checking both required backup locations…", BLUE)
         checks = self.engine.preflight_all(total)
-
-        b1_ok, b1_msg, b1_free = checks.get("backup1", (False, "Not available", 0))
-        b2_ok, b2_msg, b2_free = checks.get("backup2", (False, "Not available", 0))
-        all_ok = bool(b1_ok and b2_ok)
-
-        self.backup_status_labels[1].configure(
-            text=(("Ready for Auto Correct" if auto_mode else f"Ready • {human_bytes(b1_free)} free") if b1_ok else b1_msg),
-            fg=(GREEN if b1_ok else RED),
-        )
-
-        if auto_mode:
-            staging_ok, staging_msg, staging_free = checks.get("staging", (False, "Temporary safety not available", 0))
-            all_ok = all_ok and bool(staging_ok)
-            if b2_ok and staging_ok:
-                b2_text = f"Original + temp safety ready • {human_bytes(min(b2_free, staging_free))} free"
-                b2_color = GREEN
-            else:
-                b2_text = b2_msg if not b2_ok else staging_msg
-                b2_color = RED
-            self.backup_status_labels[2].configure(text=b2_text, fg=b2_color)
-        else:
-            self.backup_status_labels[2].configure(
-                text=(f"Ready • {human_bytes(b2_free)} free" if b2_ok else b2_msg),
-                fg=(GREEN if b2_ok else RED),
-            )
-
+        all_ok = True
+        for i, key in enumerate(("backup1", "backup2"), start=1):
+            ok, msg, free = checks[key]
+            all_ok &= ok
+            self.backup_status_labels[i].configure(text=(f"Ready • {human_bytes(free)} free" if ok else msg), fg=(GREEN if ok else RED))
         cloud_text = self.dropbox.connection_label()
-        cloud_suffix = " • original upload after local safety" if auto_mode else " • uploads after 2/2 local verification"
-        self.backup_status_labels[3].configure(
-            text=cloud_text + cloud_suffix,
-            fg=(GREEN if self.dropbox.configured() else ORANGE),
-        )
+        self.backup_status_labels[3].configure(text=(cloud_text + " • uploads after 2/2 local verification"), fg=(GREEN if self.dropbox.configured() else ORANGE))
         self.emergency_btn.state(["disabled"] if all_ok else ["!disabled"])
         if all_ok:
-            if auto_mode:
-                self.set_banner("Ready ✓ — Backup 2 + temporary originals protect the SD card; Backup 1 will be Auto Corrected.", GREEN)
-            else:
-                self.set_banner("Both local backup locations are connected and writable. Dropbox will not delay card release.", GREEN)
+            self.set_banner("Both local backup locations are connected and writable. Dropbox will not delay card release.", GREEN)
         else:
             self.set_banner("Required backup location unavailable — SD files are protected. Emergency local backup is available.", RED)
         return all_ok
@@ -974,11 +925,6 @@ class TPSApp(tk.Tk):
         quantity_value = self.guests_var.get().strip() or "Not entered"
         notes = self.notes_var.get().strip() or "None"
         issue = self.issue_var.get().strip() or "No issues"
-        backup_mode_text = (
-            "Backup 1 Auto Correct working copies + Backup 2 untouched originals"
-            if self.is_autocorrect_mode()
-            else "Backup 1 + Backup 2 exact originals"
-        )
 
         summary = (
             "Please confirm these event details before the backup starts:\n\n"
@@ -991,17 +937,15 @@ class TPSApp(tk.Tk):
             f"Issue / notes: {notes}\n\n"
             f"Photos selected: {len(selected)}\n"
             f"Photos excluded: {excluded}\n"
-            f"Backup mode: {backup_mode_text}\n"
             f"Delete imported SD files after verification: {'Yes — final confirmation will still be required' if self.delete_var.get() else 'No'}\n\n"
             "Are these details correct and ready to back up?"
         )
         return messagebox.askyesno("Confirm event details", summary, parent=self, icon="question")
 
     def auto_check_connections_on_load(self):
-        """Check active local safety paths, Dropbox and Event Log on startup without freezing the UI."""
+        """Check local backups, Dropbox and Event Log on startup without freezing the UI."""
         if self.backup_in_progress:
             return
-        self.update_backup_mode_labels()
 
         if hasattr(self, "backup_status_labels"):
             self.backup_status_labels[1].configure(text="Checking…", fg=BLUE)
@@ -1017,7 +961,6 @@ class TPSApp(tk.Tk):
                 checks = {
                     "backup1": (False, str(exc), 0),
                     "backup2": (False, str(exc), 0),
-                    "staging": (False, str(exc), 0),
                 }
 
             if self.dropbox.configured():
@@ -1042,41 +985,32 @@ class TPSApp(tk.Tk):
 
     def apply_startup_connection_results(self, payload):
         checks, dropbox_ok, dropbox_msg, eventlog_ok, eventlog_msg = payload
-        auto_mode = self.is_autocorrect_mode()
-        self.update_backup_mode_labels()
-
-        b1_ok, b1_msg, b1_free = checks.get("backup1", (False, "Not available", 0))
-        b2_ok, b2_msg, b2_free = checks.get("backup2", (False, "Not available", 0))
-        local_ok = bool(b1_ok and b2_ok)
+        local_ok = True
+        for i, key in enumerate(("backup1", "backup2"), start=1):
+            ok, msg, free = checks.get(key, (False, "Not available", 0))
+            local_ok = local_ok and bool(ok)
+            if hasattr(self, "backup_status_labels"):
+                self.backup_status_labels[i].configure(
+                    text=(f"Ready • {human_bytes(free)} free" if ok else msg),
+                    fg=(GREEN if ok else RED),
+                )
 
         if hasattr(self, "backup_status_labels"):
-            self.backup_status_labels[1].configure(
-                text=(("Ready for Auto Correct" if auto_mode else f"Ready • {human_bytes(b1_free)} free") if b1_ok else b1_msg),
-                fg=(GREEN if b1_ok else RED),
-            )
-
-            if auto_mode:
-                staging_ok, staging_msg, staging_free = checks.get("staging", (False, "Temporary safety not available", 0))
-                local_ok = local_ok and bool(staging_ok)
-                self.backup_status_labels[2].configure(
-                    text=(f"Original + temp safety ready • {human_bytes(min(b2_free, staging_free))} free" if b2_ok and staging_ok else (b2_msg if not b2_ok else staging_msg)),
-                    fg=(GREEN if b2_ok and staging_ok else RED),
-                )
-            else:
-                self.backup_status_labels[2].configure(
-                    text=(f"Ready • {human_bytes(b2_free)} free" if b2_ok else b2_msg),
-                    fg=(GREEN if b2_ok else RED),
-                )
-
             if dropbox_ok:
                 self.backup_status_labels[3].configure(
-                    text=("Connected ✓ • originals upload after local safety" if auto_mode else "Connected ✓ • uploads after 2/2 local verification"),
+                    text="Connected ✓ • uploads after 2/2 local verification",
                     fg=GREEN,
                 )
             elif self.dropbox.configured():
-                self.backup_status_labels[3].configure(text=f"Dropbox issue • {dropbox_msg}", fg=ORANGE)
+                self.backup_status_labels[3].configure(
+                    text=f"Dropbox issue • {dropbox_msg}",
+                    fg=ORANGE,
+                )
             else:
-                self.backup_status_labels[3].configure(text="Not connected • cloud backups remain pending", fg=ORANGE)
+                self.backup_status_labels[3].configure(
+                    text="Not connected • cloud backups remain pending",
+                    fg=ORANGE,
+                )
 
         if hasattr(self, "eventlog_admin_status"):
             self.eventlog_admin_status.configure(
@@ -1087,12 +1021,12 @@ class TPSApp(tk.Tk):
         if hasattr(self, "emergency_btn"):
             self.emergency_btn.state(["disabled"] if local_ok else ["!disabled"])
 
+        # Do not overwrite an SD-card detection/result message if the user has already inserted a card.
         if not self.source_var.get().strip():
             if local_ok:
                 cloud_note = "Dropbox connected" if dropbox_ok else "Dropbox pending/not connected"
                 event_note = "Event Log connected" if eventlog_ok else "Event Log will retry"
-                mode_note = "Auto Correct working mode" if auto_mode else "Exact-original mode"
-                self.set_banner(f"Connections checked ✓ — {mode_note} ready • {cloud_note} • {event_note}. Insert an SD card.", GREEN)
+                self.set_banner(f"Connections checked ✓ — local backups ready • {cloud_note} • {event_note}. Insert an SD card.", GREEN)
             else:
                 self.set_banner("Connection check found a local backup problem — Emergency Local Backup is available.", RED)
 
@@ -1159,61 +1093,22 @@ class TPSApp(tk.Tk):
                 elif kind == "history_done":
                     self.set_banner(payload, GREEN)
                     self.refresh_history()
-                    self.start_pending_autocorrect_sync()
-                    self.after(2500, self.start_pending_dropbox_sync)
+                    self.start_pending_dropbox_sync()
                 elif kind == "history_error":
                     messagebox.showerror("Could not complete backup", payload, parent=self)
-                elif kind == "autocorrect_progress":
-                    job_id, ev = payload
-                    if hasattr(self, "backup_status_labels") and self.source_var.get().strip():
-                        self.backup_status_labels[1].configure(text=f"Auto Correct • {ev.current}/{ev.total}", fg=BLUE)
-                    self.refresh_history()
-                elif kind == "autocorrect_done":
-                    job_id = payload
-                    if hasattr(self, "backup_status_labels") and self.source_var.get().strip():
-                        self.backup_status_labels[1].configure(text="Auto Correct verified ✓", fg=GREEN)
-                    self.refresh_history()
-                    self.start_dropbox_for_job(job_id)
-                    self.after(2500, self.start_pending_dropbox_sync)
-                elif kind == "autocorrect_error":
-                    job_id, err = payload
-                    self.engine.mark_autocorrect_failed(job_id, err)
-                    if hasattr(self, "backup_status_labels") and self.source_var.get().strip():
-                        self.backup_status_labels[1].configure(text="Auto Correct failed • originals safe", fg=RED)
-                    self.refresh_history()
-                    self.start_dropbox_for_job(job_id)
-                    if self.current_page == "history":
-                        messagebox.showwarning("Auto Correct", f"Auto Correct could not complete. Untouched originals remain safe in Backup 2 / Dropbox workflow.\n\n{err}", parent=self)
-                elif kind == "restore_backup1_done":
-                    job_id, archive_path = payload
-                    self.refresh_history()
-                    messagebox.showinfo(
-                        "Backup 1 restored",
-                        "Backup 1 has been rebuilt from the untouched Backup 2 originals.\n\n"
-                        + (f"The previous Auto-Corrected folder was preserved at:\n{archive_path}" if archive_path else "No previous corrected folder needed to be moved."),
-                        parent=self,
-                    )
-                elif kind == "restore_backup1_error":
-                    messagebox.showerror("Could not restore Backup 1", str(payload), parent=self)
                 elif kind == "dropbox_progress":
                     job_id, done, total, name = payload
-                    if hasattr(self, "backup_status_labels") and self.source_var.get().strip():
+                    if hasattr(self, "backup_status_labels"):
                         self.backup_status_labels[3].configure(text=f"Uploading • {done}/{total} • {name}", fg=BLUE)
                     self.refresh_history()
                 elif kind == "dropbox_done":
-                    job_id = payload
-                    if hasattr(self, "backup_status_labels") and self.source_var.get().strip():
-                        self.backup_status_labels[3].configure(text="Cloud originals verified ✓", fg=GREEN)
+                    if hasattr(self, "backup_status_labels"):
+                        self.backup_status_labels[3].configure(text="Cloud backup verified ✓", fg=GREEN)
                     self.refresh_history()
-                    manifest = self.storage.load_manifest(job_id) or {}
-                    if manifest.get("backup_mode") == "auto_correct":
-                        if manifest.get("backups", {}).get("backup1", {}).get("status") == "autocorrect_verified":
-                            self.set_banner("BACKUP 1 AUTO-CORRECTED + BACKUP 2 ORIGINALS + DROPBOX ORIGINALS VERIFIED ✓", GREEN)
-                    else:
-                        self.set_banner("2/2 LOCAL VERIFIED + DROPBOX VERIFIED ✓", GREEN)
+                    self.set_banner("2/2 LOCAL VERIFIED + DROPBOX VERIFIED ✓", GREEN)
                 elif kind == "dropbox_error":
                     job_id, err = payload
-                    if hasattr(self, "backup_status_labels") and self.source_var.get().strip():
+                    if hasattr(self, "backup_status_labels"):
                         self.backup_status_labels[3].configure(text="Pending • will retry later", fg=ORANGE)
                     self.refresh_history()
                 elif kind == "eventlog_test":
@@ -1254,10 +1149,6 @@ class TPSApp(tk.Tk):
             self.progress_text.configure(text=ev.message)
         if ev.stage == "primary_ready":
             self.set_banner("PRIMARY BACKUP READY ✓ — Backup 2 is continuing. Do not clear the SD card yet.", GREEN)
-        elif ev.stage == "backup2_ready":
-            self.set_banner("BACKUP 2 ORIGINALS VERIFIED ✓ — creating temporary exact-original safety copy.", GREEN)
-        elif ev.stage == "originals_safe":
-            self.set_banner("ORIGINALS SAFE ✓ — SD card can be cleared; Backup 1 Auto Correct and Dropbox can continue.", GREEN)
 
     def reset_import_screen(self, banner_text: str = "Ready — insert an SD card."):
         """Clear only the per-event/import state; keep Admin, Dropbox and system configuration."""
@@ -1310,52 +1201,26 @@ class TPSApp(tk.Tk):
         self.set_busy(False)
         if emergency:
             self.progress["value"] = 100
-            self.set_banner("Emergency backup verified — the normal backup workflow is still pending. DO NOT clear the SD card.", ORANGE)
-            messagebox.showinfo(
-                "Emergency backup complete",
-                f"{len(manifest['selected_files'])} photos were copied and verified to emergency storage.\n\n"
-                "The normal backup workflow is still required.\nThe SD card has NOT been deleted.",
-                parent=self,
-            )
+            self.set_banner("Emergency backup verified — the normal 2 local backups are still pending. DO NOT clear the SD card.", ORANGE)
+            messagebox.showinfo("Emergency backup complete", f"{len(manifest['selected_files'])} photos were copied and verified to emergency storage.\n\nThe two normal local backups are still required.\nThe SD card has NOT been deleted.", parent=self)
             return
 
         self.progress["value"] = 100
         selected_n = len(manifest["selected_files"])
         excluded_n = manifest["excluded_count"]
-        auto_mode = manifest.get("backup_mode") == "auto_correct"
-
-        if auto_mode:
-            self.start_autocorrect_for_job(manifest["job_id"])
-            if self.dropbox.configured():
-                cloud_note = "Dropbox original upload will start automatically after Auto Correct finishes."
-            else:
-                cloud_note = "Dropbox is not connected; the temporary original safety copy will remain until Dropbox can verify."
-            self.set_banner("ORIGINALS SAFE ✓ — Backup 2 + temporary originals verified. Backup 1 Auto Correct is processing.", GREEN)
+        if self.dropbox.configured():
+            self.set_banner("2/2 LOCAL VERIFIED — safe to remove/clear the SD card. Dropbox is uploading in the background.", GREEN)
+            self.start_dropbox_for_job(manifest["job_id"])
         else:
-            if self.dropbox.configured():
-                self.set_banner("2/2 LOCAL VERIFIED — safe to remove/clear the SD card. Dropbox is uploading in the background.", GREEN)
-                self.start_dropbox_for_job(manifest["job_id"])
-                cloud_note = "Dropbox upload has started in the background."
-            else:
-                self.set_banner("2/2 LOCAL VERIFIED — safe to remove/clear the SD card. Dropbox is not connected yet.", GREEN)
-                cloud_note = "Dropbox is not connected; the cloud copy will remain pending until it is configured."
+            self.set_banner("2/2 LOCAL VERIFIED — safe to remove/clear the SD card. Dropbox is not connected yet.", GREEN)
 
         if self.delete_var.get():
-            if auto_mode:
-                safety_text = (
-                    f"All {selected_n} selected JPEG originals are byte-for-byte verified in:\n"
-                    "• Backup 2 — untouched original archive\n"
-                    "• Temporary safety copy — on a separate drive/share\n\n"
-                    "Backup 1 Auto Correct and Dropbox originals can continue after the SD card is removed."
-                )
-            else:
-                safety_text = f"All {selected_n} selected JPEGs are byte-for-byte verified in BOTH local backup locations."
-
             yes = messagebox.askyesno(
                 "Safe to clear imported files",
-                safety_text
-                + f"\n\nDelete ONLY those {selected_n} imported JPEGs from the SD card now?\n"
-                + f"{excluded_n} excluded file(s) will remain untouched.",
+                f"All {selected_n} selected JPEGs are byte-for-byte verified in BOTH local backup locations.\n\n"
+                f"Delete ONLY those {selected_n} imported JPEGs from the SD card now?\n"
+                f"{excluded_n} excluded file(s) will remain untouched.\n\n"
+                "Dropbox continues independently from Backup 1 and does not require the SD card.",
                 parent=self,
             )
             if yes:
@@ -1368,62 +1233,35 @@ class TPSApp(tk.Tk):
                         row["sd_deleted"] = 1
                         row["updated_at"] = __import__("datetime").datetime.now().isoformat()
                         self.storage.upsert_job(row)
-
                     source_root = manifest.get("source_path", self.source_var.get().strip())
                     ejected, eject_message = windows_eject_removable_drive(source_root)
-                    background_note = (
-                        "Backup 1 Auto Correct and Dropbox originals can continue independently in the background."
-                        if auto_mode else
-                        "Dropbox and Event Log can continue independently in the background."
-                    )
                     if ejected:
                         self.reset_import_screen("SD CARD EJECTED ✓ — ready for the next card.")
                         messagebox.showinfo(
                             "Import complete",
-                            f"{selected_n} imported JPEGs were deleted after original-safety verification.\n"
+                            f"{selected_n} imported JPEGs were deleted after 2/2 local verification.\n"
                             f"{excluded_n} excluded file(s) were left untouched.\n\n"
                             f"{eject_message}.\nThe Import Event screen has been reset and is ready for the next SD card.\n\n"
-                            + background_note,
+                            "Dropbox and Event Log can continue independently in the background.",
                             parent=self,
                         )
                     else:
                         self.reset_import_screen("IMPORT COMPLETE ✓ — remove the SD card manually when ready.")
                         messagebox.showwarning(
                             "Photos deleted — remove SD card manually",
-                            f"{selected_n} imported JPEGs were deleted after original-safety verification.\n"
+                            f"{selected_n} imported JPEGs were deleted after 2/2 local verification.\n"
                             f"{excluded_n} excluded file(s) remain on the card.\n\n"
                             f"Windows could not automatically eject the card:\n{eject_message}\n\n"
                             "No further access to the SD card is required. Remove it manually, then insert the next card.\n"
-                            "The Import Event screen has already been reset.\n\n"
-                            + background_note,
+                            "The Import Event screen has already been reset.",
                             parent=self,
                         )
                 except Exception as exc:
-                    messagebox.showerror(
-                        "Could not clear SD card",
-                        f"The verified original backups remain safe, but the source files were NOT fully deleted.\n\n{exc}",
-                        parent=self,
-                    )
+                    messagebox.showerror("Could not clear SD card", f"The local backups remain safe, but the source files were NOT fully deleted.\n\n{exc}", parent=self)
                     return
         else:
-            if auto_mode:
-                messagebox.showinfo(
-                    "Originals protected",
-                    f"{selected_n} original photos are safely verified in Backup 2 plus the temporary safety copy.\n"
-                    f"{excluded_n} excluded file(s) were not imported.\n\n"
-                    "The SD card originals were retained.\n"
-                    "Backup 1 Auto Correct is processing in the background.\n"
-                    + cloud_note,
-                    parent=self,
-                )
-            else:
-                messagebox.showinfo(
-                    "Local backup complete",
-                    f"{selected_n} photos verified in 2/2 local locations.\n{excluded_n} excluded file(s) were not imported.\n\n"
-                    "The SD card originals were retained.\n"
-                    + cloud_note,
-                    parent=self,
-                )
+            cloud_note = "Dropbox upload has started in the background." if self.dropbox.configured() else "Dropbox is not connected; the cloud copy will remain pending until it is configured."
+            messagebox.showinfo("Local backup complete", f"{selected_n} photos verified in 2/2 local locations.\n{excluded_n} excluded file(s) were not imported.\n\nThe SD card originals were retained.\n{cloud_note}", parent=self)
 
     def set_banner(self, text: str, color: str):
         bg = "#E7EEE9" if color == GREEN else "#F4EBDD" if color == ORANGE else "#F3E3E3" if color == RED else "#E3ECF0"
@@ -1462,12 +1300,6 @@ class TPSApp(tk.Tk):
             command=self.complete_selected_emergency,
         ).pack(side="left", padx=8)
         ttk.Button(actions, text="Sync Event Log queue", style="Secondary.TButton", command=self.sync_eventlog_queue).pack(side="left")
-        ttk.Button(
-            actions,
-            text="Restore Backup 1 originals",
-            style="Secondary.TButton",
-            command=self.restore_selected_backup1_originals,
-        ).pack(side="left", padx=(8, 0))
 
         filters = tk.Frame(card, bg="#F6F8F8", highlightbackground=LINE, highlightthickness=1)
         filters.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
@@ -1669,46 +1501,6 @@ class TPSApp(tk.Tk):
                     arrow = " ▼" if self.history_sort_reverse else " ▲"
                 self.history_tree.heading(col, text=label + arrow, command=lambda c=col: self.sort_history_by(c))
 
-    def restore_selected_backup1_originals(self):
-        if self.autocorrect_thread and self.autocorrect_thread.is_alive():
-            messagebox.showwarning("Auto Correct still running", "Wait for the current Auto Correct job to finish before restoring Backup 1 originals.", parent=self)
-            return
-        sel = self.history_tree.selection()
-        if not sel:
-            messagebox.showwarning("Select a job", "Choose an Auto Correct backup job first.", parent=self)
-            return
-        job_id = sel[0]
-        manifest = self.storage.load_manifest(job_id)
-        if not manifest or manifest.get("backup_mode") not in {"auto_correct", "original_restored"}:
-            messagebox.showwarning("Not an Auto Correct job", "The selected job was not created with Backup 1 Auto Correct mode.", parent=self)
-            return
-        if manifest.get("backup_mode") == "original_restored":
-            messagebox.showinfo("Already restored", "Backup 1 has already been restored to exact originals for this job.", parent=self)
-            return
-        if not messagebox.askyesno(
-            "Restore Backup 1 originals",
-            "Rebuild Backup 1 from the untouched Backup 2 originals?\n\n"
-            "The current Auto-Corrected Backup 1 folder will NOT be deleted. It will be renamed with an "
-            "AUTO-CORRECTED-SAVED suffix beside the restored original folder.\n\nContinue?",
-            parent=self,
-        ):
-            return
-
-        def progress(ev: ProgressEvent):
-            self.msg_queue.put(("progress", ev))
-
-        def worker():
-            windows_keep_awake(True)
-            try:
-                _, archive_path = self.engine.restore_backup1_originals(job_id, progress)
-                self.msg_queue.put(("restore_backup1_done", (job_id, archive_path)))
-            except Exception as exc:
-                self.msg_queue.put(("restore_backup1_error", str(exc)))
-            finally:
-                windows_keep_awake(False)
-
-        threading.Thread(target=worker, daemon=True, name="TPSRestoreBackup1").start()
-
     def complete_selected_emergency(self):
         sel = self.history_tree.selection()
         if not sel:
@@ -1801,38 +1593,15 @@ class TPSApp(tk.Tk):
         tk.Label(paths, text="BACKUP LOCATIONS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(14,8))
         self.admin_path_vars = {}
         for r, (key, label) in enumerate([
-            ("backup1_path", "Backup 1 — working / primary destination"),
-            ("backup2_path", "Backup 2 — original archive destination"),
-            ("emergency_path", "Emergency / temporary original safety location"),
+            ("backup1_path", "Backup 1 — PRIMARY / priority"),
+            ("backup2_path", "Backup 2 — independent local/filesystem copy"),
+            ("emergency_path", "Emergency local backup"),
         ], start=1):
             tk.Label(paths, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=r, column=0, sticky="w", padx=16, pady=7)
             var = tk.StringVar()
             self.admin_path_vars[key] = var
             ttk.Entry(paths, textvariable=var).grid(row=r, column=1, sticky="ew", padx=8, pady=7)
             ttk.Button(paths, text="Browse", style="Secondary.TButton", command=lambda v=var: self.admin_browse(v)).grid(row=r, column=2, padx=(0,16), pady=7)
-
-        tk.Label(paths, text="Backup 1 mode", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=4, column=0, sticky="w", padx=16, pady=7)
-        self.backup1_mode_var = tk.StringVar(value="Auto Correct working copies (experimental)")
-        self.backup1_mode_combo = ttk.Combobox(
-            paths,
-            textvariable=self.backup1_mode_var,
-            state="readonly",
-            values=[
-                "Auto Correct working copies (experimental)",
-                "Exact original backup (standard)",
-            ],
-            width=42,
-        )
-        self.backup1_mode_combo.grid(row=4, column=1, sticky="w", padx=8, pady=7)
-        tk.Label(
-            paths,
-            text="Reversible: switch back to Exact original backup at any time for future imports. In Auto Correct mode, Backup 2 + a temporary exact-original safety copy protect the card until Dropbox verifies. Existing corrected jobs can also restore Backup 1 from Backup 2 in Backup History.",
-            bg=CARD,
-            fg=MUTED,
-            font=("Segoe UI", 8),
-            wraplength=850,
-            justify="left",
-        ).grid(row=5, column=0, columnspan=3, sticky="w", padx=16, pady=(0,14))
 
         cloud = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         cloud.grid(row=1, column=0, sticky="ew", pady=(0, 12))
@@ -1921,9 +1690,6 @@ class TPSApp(tk.Tk):
             var.set(self.storage.get_setting(key, ""))
         if hasattr(self, "admin_delete_default_var"):
             self.admin_delete_default_var.set(bool(self.storage.get_setting("delete_after_verified_default", False)))
-            if hasattr(self, "backup1_mode_var"):
-                mode = str(self.storage.get_setting("backup1_mode", "auto_correct") or "auto_correct")
-                self.backup1_mode_var.set("Auto Correct working copies (experimental)" if mode == "auto_correct" else "Exact original backup (standard)")
             self.dropbox_app_key_var.set(self.storage.get_setting("dropbox_app_key", ""))
             self.refresh_dropbox_admin_status()
             self.refresh_eventlog_admin_status()
@@ -2001,12 +1767,9 @@ class TPSApp(tk.Tk):
         for key, var in self.admin_path_vars.items():
             self.storage.set_setting(key, var.get().strip())
         self.storage.set_setting("dropbox_app_key", self.dropbox_app_key_var.get().strip())
-        selected_mode = self.backup1_mode_var.get().strip() if hasattr(self, "backup1_mode_var") else "Exact original backup (standard)"
-        self.storage.set_setting("backup1_mode", "auto_correct" if selected_mode.startswith("Auto Correct") else "original")
         self.storage.set_setting("delete_after_verified_default", bool(self.admin_delete_default_var.get()))
         self.delete_var.set(bool(self.admin_delete_default_var.get()))
         self.load_reference_data()
-        self.update_backup_mode_labels()
         if show_message:
             messagebox.showinfo("Admin settings", "Settings saved. Staff cannot edit the configured backup locations from the Import screen.", parent=self)
 
@@ -2015,14 +1778,11 @@ class TPSApp(tk.Tk):
         checks = self.engine.preflight_all(1024 * 1024)
         lines = []
         for key in ("backup1","backup2"):
-            ok, msg, free = checks.get(key, (False, "Not available", 0))
+            ok, msg, free = checks[key]
             lines.append(f"{key.upper()}: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
-        if self.is_autocorrect_mode():
-            ok, msg, free = checks.get("staging", (False, "Not available", 0))
-            lines.append(f"TEMP ORIGINAL SAFETY: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
         epath = self.storage.get_setting("emergency_path", "")
         ok, msg, free = self.engine.preflight_path(epath, 1024 * 1024)
-        lines.append(f"EMERGENCY ROOT: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
+        lines.append(f"EMERGENCY: {'READY' if ok else 'FAILED'} — {msg}" + (f" — {human_bytes(free)} free" if ok else ""))
         messagebox.showinfo("Backup location test", "\n".join(lines), parent=self)
 
     def admin_speed_test(self):
@@ -2088,58 +1848,6 @@ class TPSApp(tk.Tk):
         if hasattr(self, "backup_status_labels"):
             self.backup_status_labels[3].configure(text="Not connected • cloud backups remain pending", fg=ORANGE)
 
-    def start_autocorrect_for_job(self, job_id: str):
-        if self.autocorrect_thread and self.autocorrect_thread.is_alive():
-            return
-
-        def progress(ev: ProgressEvent):
-            self.msg_queue.put(("autocorrect_progress", (job_id, ev)))
-
-        def worker():
-            windows_keep_awake(True)
-            try:
-                self.engine.build_autocorrect_backup1(job_id, progress)
-                self.msg_queue.put(("autocorrect_done", job_id))
-            except Exception as exc:
-                self.msg_queue.put(("autocorrect_error", (job_id, str(exc))))
-            finally:
-                windows_keep_awake(False)
-
-        self.autocorrect_thread = threading.Thread(target=worker, daemon=True, name="TPSAutoCorrect")
-        self.autocorrect_thread.start()
-
-    def start_pending_autocorrect_sync(self):
-        if self.autocorrect_thread and self.autocorrect_thread.is_alive():
-            return
-        pending = []
-        for row in self.storage.list_jobs(limit=100):
-            manifest = self.storage.load_manifest(row["id"])
-            if not manifest or manifest.get("backup_mode") != "auto_correct":
-                continue
-            backups = manifest.get("backups", {})
-            if backups.get("backup2", {}).get("status") == "verified" and backups.get("backup1", {}).get("status") != "autocorrect_verified":
-                pending.append(row["id"])
-        if not pending:
-            return
-
-        def worker():
-            windows_keep_awake(True)
-            try:
-                for job_id in pending:
-                    def progress(ev: ProgressEvent, jid=job_id):
-                        self.msg_queue.put(("autocorrect_progress", (jid, ev)))
-                    try:
-                        self.engine.build_autocorrect_backup1(job_id, progress)
-                        self.msg_queue.put(("autocorrect_done", job_id))
-                    except Exception as exc:
-                        self.msg_queue.put(("autocorrect_error", (job_id, str(exc))))
-                        break
-            finally:
-                windows_keep_awake(False)
-
-        self.autocorrect_thread = threading.Thread(target=worker, daemon=True, name="TPSAutoCorrectPending")
-        self.autocorrect_thread.start()
-
     def start_dropbox_for_job(self, job_id: str):
         if not self.dropbox.configured():
             return
@@ -2188,19 +1896,8 @@ class TPSApp(tk.Tk):
 
     def on_close(self):
         cloud_running = bool(self.dropbox_thread and self.dropbox_thread.is_alive())
-        autocorrect_running = bool(self.autocorrect_thread and self.autocorrect_thread.is_alive())
         msg = "Exit the application?"
-        if cloud_running or autocorrect_running:
-            active = []
-            if autocorrect_running:
-                active.append("Backup 1 Auto Correct")
-            if cloud_running:
-                active.append("Dropbox upload")
-            msg = (
-                f"{' and '.join(active)} is still in progress.\n\n"
-                "Untouched originals remain safe in Backup 2 / the original-safety workflow. "
-                "Dropbox and Auto Correct jobs resume automatically next launch from the verified originals.\n\n"
-                "Exit now?"
-            )
+        if cloud_running:
+            msg = "A Dropbox upload is still in progress.\n\nYou can still exit safely: both local backups are already verified and the Dropbox upload will resume next time the app starts.\n\nExit now?"
         if messagebox.askokcancel("Exit TPS Photo Import", msg, parent=self):
             self.destroy()
