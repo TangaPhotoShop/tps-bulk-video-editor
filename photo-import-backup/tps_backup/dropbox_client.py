@@ -29,6 +29,11 @@ class DropboxBackupError(RuntimeError):
     pass
 
 
+class DropboxUploadPaused(DropboxBackupError):
+    """Normal user-requested pause; the remaining files stay queued for a later launch."""
+    pass
+
+
 def dropbox_content_hash(path: Path) -> str:
     """Dropbox content hash: SHA-256 of concatenated 4 MiB block SHA-256 digests."""
     overall = hashlib.sha256()
@@ -184,7 +189,12 @@ class DropboxBackupClient:
         elif not isinstance(meta, FolderMetadata):
             raise DropboxBackupError(f"Dropbox event path is not a folder: {remote_folder}")
 
-    def upload_job(self, job_id: str, progress: Callable[[int, int, str], None] | None = None) -> dict[str, Any]:
+    def upload_job(
+        self,
+        job_id: str,
+        progress: Callable[[int, int, str], None] | None = None,
+        stop_event: Any | None = None,
+    ) -> dict[str, Any]:
         manifest = self.storage.load_manifest(job_id)
         if not manifest:
             raise DropboxBackupError("Backup manifest not found")
@@ -209,6 +219,14 @@ class DropboxBackupClient:
         files = manifest.get("selected_files", [])
         total = len(files)
         for idx, item in enumerate(files, start=1):
+            if stop_event is not None and stop_event.is_set():
+                cloud["status"] = "pending"
+                cloud["paused_at"] = datetime.now().isoformat()
+                cloud["pause_reason"] = "Application closed before Dropbox upload completed"
+                manifest["status"] = "verified_2_of_2_dropbox_pending"
+                self._save_cloud_state(manifest)
+                raise DropboxUploadPaused("Dropbox upload paused and queued for next launch")
+
             local_path = source_folder / item["renamed"]
             if not local_path.exists() or local_path.stat().st_size != item["size"]:
                 raise DropboxBackupError(f"Verified local source missing or wrong size: {item['renamed']}")
@@ -237,6 +255,14 @@ class DropboxBackupClient:
             self._save_cloud_state(manifest)
             if progress:
                 progress(idx, total, item["renamed"])
+
+            if stop_event is not None and stop_event.is_set():
+                cloud["status"] = "pending"
+                cloud["paused_at"] = datetime.now().isoformat()
+                cloud["pause_reason"] = "Application closed before Dropbox upload completed"
+                manifest["status"] = "verified_2_of_2_dropbox_pending"
+                self._save_cloud_state(manifest)
+                raise DropboxUploadPaused("Dropbox upload paused and queued for next launch")
 
         cloud["status"] = "verified"
         cloud["verified_at"] = datetime.now().isoformat()
@@ -267,6 +293,20 @@ class DropboxBackupClient:
                     tmp.replace(final)
                 except Exception:
                     pass
+
+    def pause_job(self, job_id: str, reason: str = "Application closed") -> None:
+        """Persist an in-progress cloud job as pending without treating it as a failure."""
+        manifest = self.storage.load_manifest(job_id)
+        if not manifest:
+            return
+        cloud = manifest.setdefault("backups", {}).setdefault("dropbox", {"path": "", "status": "pending", "uploaded": []})
+        if cloud.get("status") == "verified":
+            return
+        cloud["status"] = "pending"
+        cloud["paused_at"] = datetime.now().isoformat()
+        cloud["pause_reason"] = reason
+        manifest["status"] = "verified_2_of_2_dropbox_pending"
+        self._save_cloud_state(manifest)
 
     def mark_error(self, job_id: str, error: str) -> None:
         manifest = self.storage.load_manifest(job_id)
