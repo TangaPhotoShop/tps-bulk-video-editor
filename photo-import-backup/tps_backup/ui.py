@@ -202,6 +202,7 @@ class TPSApp(tk.Tk):
         self.engine = BackupEngine(self.storage)
         self.dropbox = DropboxBackupClient(self.storage)
         self.dropbox_thread = None
+        self.autocorrect_thread = None
         self.msg_queue: queue.Queue = queue.Queue()
         self.current_page = "import"
         self.photo_image = None
@@ -557,12 +558,15 @@ class TPSApp(tk.Tk):
         backup.grid_columnconfigure(0, weight=1)
         tk.Label(backup, text="BACKUP READINESS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
         self.backup_status_labels = {}
-        for i, label in enumerate(("Primary backup", "Backup 2", "Dropbox cloud"), start=1):
+        self.backup_name_labels = {}
+        for i, label in enumerate(("Backup 1", "Backup 2", "Dropbox cloud"), start=1):
             row = tk.Frame(backup, bg=CARD)
             row.grid(row=i, column=0, sticky="ew", padx=16, pady=2)
-            tk.Label(row, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).pack(side="left")
+            name_label = tk.Label(row, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9))
+            name_label.pack(side="left")
             status = tk.Label(row, text="Not checked", bg=CARD, fg=MUTED, font=("Segoe UI", 9))
             status.pack(side="right")
+            self.backup_name_labels[i] = name_label
             self.backup_status_labels[i] = status
         ttk.Button(backup, text="Check network now", style="Secondary.TButton", command=self.check_network).grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 12))
 
@@ -590,6 +594,22 @@ class TPSApp(tk.Tk):
         for var in (self.date_var, self.initials_var, self.event_var, self.time_var):
             var.trace_add("write", lambda *_: self.update_folder_preview())
         self.update_folder_preview()
+        self.update_backup_mode_labels()
+
+    def is_autocorrect_mode(self) -> bool:
+        return str(self.storage.get_setting("backup1_mode", "original") or "original").lower() == "auto_correct"
+
+    def update_backup_mode_labels(self):
+        if not hasattr(self, "backup_name_labels"):
+            return
+        if self.is_autocorrect_mode():
+            self.backup_name_labels[1].configure(text="Backup 1 — working Auto Correct")
+            self.backup_name_labels[2].configure(text="Backup 2 — original archive + temp safety")
+            self.backup_name_labels[3].configure(text="Dropbox — original cloud archive")
+        else:
+            self.backup_name_labels[1].configure(text="Backup 1 — exact originals")
+            self.backup_name_labels[2].configure(text="Backup 2 — exact originals")
+            self.backup_name_labels[3].configure(text="Dropbox cloud")
 
     def load_reference_data(self):
         photographers = self.storage.get_setting("photographers", [])
@@ -861,21 +881,49 @@ class TPSApp(tk.Tk):
         return sum(p.size for p in getattr(self, "photos", []) if p.selected)
 
     def check_network(self):
-        total = self.selected_bytes()
-        if total <= 0:
-            total = 1
-        self.set_banner("Checking both required backup locations…", BLUE)
+        total = max(self.selected_bytes(), 1)
+        self.update_backup_mode_labels()
+        auto_mode = self.is_autocorrect_mode()
+        self.set_banner("Checking required backup locations…", BLUE)
         checks = self.engine.preflight_all(total)
-        all_ok = True
-        for i, key in enumerate(("backup1", "backup2"), start=1):
-            ok, msg, free = checks[key]
-            all_ok &= ok
-            self.backup_status_labels[i].configure(text=(f"Ready • {human_bytes(free)} free" if ok else msg), fg=(GREEN if ok else RED))
+
+        b1_ok, b1_msg, b1_free = checks.get("backup1", (False, "Not available", 0))
+        b2_ok, b2_msg, b2_free = checks.get("backup2", (False, "Not available", 0))
+        all_ok = bool(b1_ok and b2_ok)
+
+        self.backup_status_labels[1].configure(
+            text=(("Ready for Auto Correct" if auto_mode else f"Ready • {human_bytes(b1_free)} free") if b1_ok else b1_msg),
+            fg=(GREEN if b1_ok else RED),
+        )
+
+        if auto_mode:
+            staging_ok, staging_msg, staging_free = checks.get("staging", (False, "Temporary safety not available", 0))
+            all_ok = all_ok and bool(staging_ok)
+            if b2_ok and staging_ok:
+                b2_text = f"Original + temp safety ready • {human_bytes(min(b2_free, staging_free))} free"
+                b2_color = GREEN
+            else:
+                b2_text = b2_msg if not b2_ok else staging_msg
+                b2_color = RED
+            self.backup_status_labels[2].configure(text=b2_text, fg=b2_color)
+        else:
+            self.backup_status_labels[2].configure(
+                text=(f"Ready • {human_bytes(b2_free)} free" if b2_ok else b2_msg),
+                fg=(GREEN if b2_ok else RED),
+            )
+
         cloud_text = self.dropbox.connection_label()
-        self.backup_status_labels[3].configure(text=(cloud_text + " • uploads after 2/2 local verification"), fg=(GREEN if self.dropbox.configured() else ORANGE))
+        cloud_suffix = " • original upload after local safety" if auto_mode else " • uploads after 2/2 local verification"
+        self.backup_status_labels[3].configure(
+            text=cloud_text + cloud_suffix,
+            fg=(GREEN if self.dropbox.configured() else ORANGE),
+        )
         self.emergency_btn.state(["disabled"] if all_ok else ["!disabled"])
         if all_ok:
-            self.set_banner("Both local backup locations are connected and writable. Dropbox will not delay card release.", GREEN)
+            if auto_mode:
+                self.set_banner("Ready ✓ — Backup 2 + temporary originals protect the SD card; Backup 1 will be Auto Corrected.", GREEN)
+            else:
+                self.set_banner("Both local backup locations are connected and writable. Dropbox will not delay card release.", GREEN)
         else:
             self.set_banner("Required backup location unavailable — SD files are protected. Emergency local backup is available.", RED)
         return all_ok
