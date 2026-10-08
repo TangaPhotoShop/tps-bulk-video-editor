@@ -32,7 +32,7 @@ from .backup_engine import (
 )
 from . import __version__ as APP_VERSION
 from .storage import Storage
-from .dropbox_client import DropboxBackupClient, DROPBOX_DESTINATION, DropboxBackupError
+from .dropbox_client import DropboxBackupClient, DROPBOX_DESTINATION, DropboxBackupError, DropboxUploadPaused
 
 BG = "#EEF3F4"
 CARD = "#FFFFFF"
@@ -202,6 +202,9 @@ class TPSApp(tk.Tk):
         self.engine = BackupEngine(self.storage)
         self.dropbox = DropboxBackupClient(self.storage)
         self.dropbox_thread = None
+        self.dropbox_stop_event = threading.Event()
+        self.dropbox_current_job_id = None
+        self.closing = False
         self.msg_queue: queue.Queue = queue.Queue()
         self.current_page = "import"
         self.photo_image = None
@@ -557,12 +560,15 @@ class TPSApp(tk.Tk):
         backup.grid_columnconfigure(0, weight=1)
         tk.Label(backup, text="BACKUP READINESS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14, 8))
         self.backup_status_labels = {}
-        for i, label in enumerate(("Primary backup", "Backup 2", "Dropbox cloud"), start=1):
+        self.backup_name_labels = {}
+        for i, label in enumerate(("Backup 1", "Backup 2", "Dropbox"), start=1):
             row = tk.Frame(backup, bg=CARD)
             row.grid(row=i, column=0, sticky="ew", padx=16, pady=2)
-            tk.Label(row, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).pack(side="left")
+            name_label = tk.Label(row, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9))
+            name_label.pack(side="left")
             status = tk.Label(row, text="Not checked", bg=CARD, fg=MUTED, font=("Segoe UI", 9))
             status.pack(side="right")
+            self.backup_name_labels[i] = name_label
             self.backup_status_labels[i] = status
         ttk.Button(backup, text="Check network now", style="Secondary.TButton", command=self.check_network).grid(row=4, column=0, sticky="ew", padx=16, pady=(10, 12))
 
@@ -590,6 +596,26 @@ class TPSApp(tk.Tk):
         for var in (self.date_var, self.initials_var, self.event_var, self.time_var):
             var.trace_add("write", lambda *_: self.update_folder_preview())
         self.update_folder_preview()
+        self.refresh_backup_destination_labels()
+
+    def _folder_display_name(self, raw_path: str, fallback: str) -> str:
+        raw = (raw_path or "").strip().rstrip("\\/")
+        if not raw:
+            return fallback
+        # Handle Windows drive/UNC paths without exposing the whole path.
+        parts = [part for part in raw.replace("/", "\\").split("\\") if part]
+        return parts[-1] if parts else fallback
+
+    def refresh_backup_destination_labels(self):
+        """Show only configured destination folder names in Backup Readiness."""
+        if not hasattr(self, "backup_name_labels"):
+            return
+        b1_name = self._folder_display_name(self.storage.get_setting("backup1_path", ""), "Not configured")
+        b2_name = self._folder_display_name(self.storage.get_setting("backup2_path", ""), "Not configured")
+        db_name = self._folder_display_name(DROPBOX_DESTINATION, "Dropbox")
+        self.backup_name_labels[1].configure(text=f"Backup 1 — {b1_name}")
+        self.backup_name_labels[2].configure(text=f"Backup 2 — {b2_name}")
+        self.backup_name_labels[3].configure(text=f"Dropbox — {db_name}")
 
     def load_reference_data(self):
         photographers = self.storage.get_setting("photographers", [])
