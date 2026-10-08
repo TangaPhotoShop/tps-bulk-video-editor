@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import copy
 import hashlib
 import os
 import queue
@@ -1767,6 +1768,84 @@ class TPSApp(tk.Tk):
             self.refresh_eventlog_admin_status()
             self.refresh_admin_people()
             self.refresh_admin_events()
+
+    def refresh_reference_sync_status(self, text: str | None = None, color: str | None = None):
+        if not hasattr(self, "reference_sync_status"):
+            return
+        if text is not None:
+            self.reference_sync_status.configure(text=text, fg=(color or MUTED))
+            return
+        revision = int(self.storage.get_setting("reference_revision", 0) or 0)
+        if revision > 0:
+            self.reference_sync_status.configure(
+                text=f"Photographers + Events • shared ✓ • revision {revision}",
+                fg=GREEN,
+            )
+        else:
+            self.reference_sync_status.configure(
+                text="Photographers + Events • local cache • awaiting first sync",
+                fg=ORANGE,
+            )
+
+    def auto_sync_reference_data(self, show_result: bool = False):
+        if self.closing:
+            return
+        if self.reference_sync_busy:
+            if show_result:
+                messagebox.showinfo("Shared lists", "Photographers and Events are already syncing.", parent=self)
+            return
+
+        self.reference_sync_busy = True
+        self.refresh_reference_sync_status("Photographers + Events • syncing…", BLUE)
+
+        def worker():
+            try:
+                data = self.reference_sync.sync()
+                self.msg_queue.put(("reference_sync_done", (data, show_result)))
+            except Exception as exc:
+                self.msg_queue.put(("reference_sync_error", (str(exc), show_result)))
+
+        threading.Thread(target=worker, daemon=True, name="TPSReferenceSync").start()
+
+    def _can_edit_shared_reference(self) -> bool:
+        if self.reference_sync_busy:
+            messagebox.showinfo(
+                "Shared lists syncing",
+                "Please wait for the current Photographers / Events sync to finish, then try again.",
+                parent=self,
+            )
+            return False
+        return True
+
+    def _commit_shared_reference_change(
+        self,
+        photographers: list[dict],
+        events: list[dict],
+        old_photographers: list[dict],
+        old_events: list[dict],
+    ):
+        self.storage.set_setting("photographers", photographers)
+        self.storage.set_setting("events", events)
+        self.load_reference_data()
+        self.refresh_admin_people()
+        self.refresh_admin_events()
+
+        self.reference_sync_busy = True
+        self.refresh_reference_sync_status("Photographers + Events • saving centrally…", BLUE)
+
+        def worker():
+            try:
+                data = self.reference_sync.push(photographers, events)
+                self.msg_queue.put(("reference_save_done", data))
+            except ReferenceSyncConflict as exc:
+                self.msg_queue.put(("reference_save_conflict", exc.current))
+            except Exception as exc:
+                self.msg_queue.put((
+                    "reference_save_error",
+                    (str(exc), old_photographers, old_events),
+                ))
+
+        threading.Thread(target=worker, daemon=True, name="TPSReferenceSave").start()
 
     def refresh_admin_people(self):
         self.people_tree.delete(*self.people_tree.get_children())
