@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import tempfile
+import sys
 from pathlib import Path
+
+# Running this file directly sets sys.path to tests/. Add the app root explicitly.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PIL import Image
 
