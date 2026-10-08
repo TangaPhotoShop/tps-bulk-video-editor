@@ -26,91 +26,130 @@ jobs:
       - name: Install build dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Create sharp SD-card cloud backup app icon
+      - name: Create pixel-sharp SD-card app icon
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Path assets -Force | Out-Null
           @'
+          from __future__ import annotations
+
+          import io
+          import struct
+          from pathlib import Path
           from PIL import Image, ImageDraw
 
-          VIOLET = (102, 45, 190, 255)
-          VIOLET_DARK = (54, 20, 108, 255)
-          CYAN = (74, 226, 255, 255)
+          # Unique TPS Photo Import identity: electric indigo + white SD card + lime backup arrow.
+          INDIGO = (51, 61, 196, 255)
+          INDIGO_DARK = (27, 31, 112, 255)
           WHITE = (255, 255, 255, 255)
+          LIME = (205, 255, 72, 255)
 
-          def make_icon(size: int):
-              # Draw each Windows size independently at 4x for clean antialiasing.
+          def make_small(size: int) -> Image.Image:
+              # Tiny icons are drawn directly at their native size: no large artwork scaled down.
+              im = Image.new("RGBA", (size, size), INDIGO)
+              d = ImageDraw.Draw(im)
+              m = max(1, size // 8)
+              # SD card body.
+              x0, y0 = m + 1, m + 1
+              x1, y1 = int(size * .68), size - m - 1
+              cut = max(2, size // 5)
+              card = [(x0, y0), (x1-cut, y0), (x1, y0+cut), (x1, y1), (x0, y1)]
+              d.polygon(card, fill=WHITE)
+              # Card contacts.
+              contact_y0 = y0 + max(2, size // 9)
+              contact_y1 = contact_y0 + max(1, size // 8)
+              for cx in range(x0 + 2, max(x0 + 3, x1-cut-1), max(2, size // 7)):
+                  d.rectangle((cx, contact_y0, min(cx+1, x1-1), contact_y1), fill=INDIGO_DARK)
+              # Bold lime backup arrow on right.
+              ax = int(size * .73)
+              d.rectangle((ax, int(size*.45), min(size-2, ax+max(1,size//8)), int(size*.78)), fill=LIME)
+              d.polygon([
+                  (int(size*.63), int(size*.51)),
+                  (int(size*.78), int(size*.34)),
+                  (int(size*.93), int(size*.51)),
+              ], fill=LIME)
+              return im
+
+          def make_large(size: int) -> Image.Image:
               scale = 4
               s = size * scale
               def p(v): return int(round(v * s))
-              im = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+              im = Image.new("RGBA", (s, s), INDIGO)
               d = ImageDraw.Draw(im)
-
-              # Flat high-contrast violet tile.
-              d.rounded_rectangle((p(.035), p(.035), p(.965), p(.965)), radius=p(.19), fill=VIOLET)
-              d.rounded_rectangle((p(.055), p(.055), p(.945), p(.945)), radius=p(.17), outline=VIOLET_DARK, width=max(1, p(.025)))
-
-              # White SD card - dominant symbol, readable at 16 px.
-              card = [(p(.17), p(.22)), (p(.57), p(.22)), (p(.70), p(.35)), (p(.70), p(.76)), (p(.17), p(.76))]
+              # SD card dominates the icon.
+              card = [(p(.12),p(.18)),(p(.56),p(.18)),(p(.70),p(.32)),(p(.70),p(.82)),(p(.12),p(.82))]
               d.polygon(card, fill=WHITE)
-              d.polygon([(p(.57), p(.22)), (p(.57), p(.35)), (p(.70), p(.35))], fill=VIOLET_DARK)
+              d.polygon([(p(.56),p(.18)),(p(.56),p(.32)),(p(.70),p(.32))], fill=INDIGO_DARK)
+              # Contacts.
+              for x in (.19,.28,.37,.46,.55):
+                  d.rounded_rectangle((p(x),p(.235),p(x+.045),p(.34)), radius=p(.01), fill=INDIGO_DARK)
+              # Photo glyph inside SD card.
+              d.rounded_rectangle((p(.20),p(.43),p(.61),p(.71)), radius=p(.035), fill=INDIGO_DARK)
+              d.ellipse((p(.25),p(.48),p(.33),p(.56)), fill=WHITE)
+              d.polygon([(p(.23),p(.68)),(p(.36),p(.56)),(p(.46),p(.65)),(p(.53),p(.58)),(p(.60),p(.68))], fill=WHITE)
+              # Simple cloud in top-right.
+              d.ellipse((p(.63),p(.12),p(.78),p(.27)), fill=WHITE)
+              d.ellipse((p(.72),p(.08),p(.90),p(.28)), fill=WHITE)
+              d.ellipse((p(.83),p(.15),p(.96),p(.29)), fill=WHITE)
+              d.rectangle((p(.67),p(.21),p(.93),p(.29)), fill=WHITE)
+              # Large lime upload arrow.
+              d.rounded_rectangle((p(.75),p(.43),p(.83),p(.79)), radius=p(.015), fill=LIME)
+              d.polygon([(p(.64),p(.50)),(p(.79),p(.34)),(p(.94),p(.50))], fill=LIME)
+              return im.resize((size,size), Image.Resampling.LANCZOS)
 
-              # SD contacts.
-              for x in (.23, .31, .39, .47, .55):
-                  d.rounded_rectangle((p(x), p(.27), p(x+.045), p(.36)), radius=p(.012), fill=VIOLET_DARK)
+          def make(size: int) -> Image.Image:
+              return make_small(size) if size <= 24 else make_large(size)
 
-              # Photo window on SD card.
-              d.rounded_rectangle((p(.235), p(.42), p(.62), p(.68)), radius=p(.035), fill=VIOLET_DARK)
-              d.ellipse((p(.28), p(.46), p(.35), p(.53)), fill=WHITE)
-              d.polygon([(p(.26), p(.64)), (p(.38), p(.53)), (p(.47), p(.61)), (p(.53), p(.55)), (p(.60), p(.64))], fill=WHITE)
+          def png_bytes(im: Image.Image) -> bytes:
+              buf = io.BytesIO()
+              im.save(buf, format="PNG", optimize=False)
+              return buf.getvalue()
 
-              # Cloud shape behind arrow - simple solid white silhouette.
-              d.ellipse((p(.57), p(.15), p(.75), p(.33)), fill=WHITE)
-              d.ellipse((p(.68), p(.11), p(.88), p(.33)), fill=WHITE)
-              d.ellipse((p(.78), p(.18), p(.94), p(.34)), fill=WHITE)
-              d.rectangle((p(.62), p(.24), p(.89), p(.34)), fill=WHITE)
-
-              # Cyan upload/backup arrow - large and unmistakable.
-              d.rounded_rectangle((p(.72), p(.43), p(.80), p(.77)), radius=p(.018), fill=CYAN)
-              d.polygon([(p(.62), p(.50)), (p(.76), p(.35)), (p(.90), p(.50))], fill=CYAN)
-
-              # At tiny sizes reduce visual noise by overpainting the photo details slightly.
-              if size <= 20:
-                  d.rounded_rectangle((p(.25), p(.43), p(.61), p(.67)), radius=p(.03), fill=VIOLET_DARK)
-                  d.polygon([(p(.28), p(.64)), (p(.40), p(.53)), (p(.50), p(.61)), (p(.58), p(.54)), (p(.61), p(.64))], fill=WHITE)
-
-              return im.resize((size, size), Image.Resampling.LANCZOS)
+          def write_ico(path: str, sizes: list[int]) -> None:
+              blobs = [png_bytes(make(s)) for s in sizes]
+              count = len(blobs)
+              header = struct.pack("<HHH", 0, 1, count)
+              offset = 6 + 16 * count
+              entries = []
+              for size, blob in zip(sizes, blobs):
+                  wh = 0 if size >= 256 else size
+                  entries.append(struct.pack(
+                      "<BBBBHHII",
+                      wh, wh, 0, 0, 1, 32, len(blob), offset
+                  ))
+                  offset += len(blob)
+              Path(path).write_bytes(header + b"".join(entries) + b"".join(blobs))
 
           sizes = [16, 20, 24, 32, 40, 48, 64, 128, 256]
-          frames = [make_icon(s) for s in sizes]
+          make(256).save("assets/tps_photo_backup.png")
+          make_large(1024).save("assets/tps_photo_backup_1024.png")
+          write_ico("assets/tps_photo_backup.ico", sizes)
+          write_ico("assets/favicon.ico", [16, 24, 32, 48])
 
-          # The in-app brand image uses the same exact symbol.
-          frames[-1].save("assets/tps_photo_backup.png")
-          make_icon(1024).save("assets/tps_photo_backup_1024.png")
-
-          # True multi-resolution ICO: Windows does not need to shrink one large bitmap.
-          frames[-1].save(
-              "assets/tps_photo_backup.ico",
-              format="ICO",
-              append_images=frames[:-1],
-          )
-          favicon_frames = [make_icon(s) for s in (16, 32, 48)]
-          favicon_frames[-1].save(
-              "assets/favicon.ico",
-              format="ICO",
-              append_images=favicon_frames[:-1],
-          )
+          # Sanity-check that every requested size exists as a real ICO frame.
+          ico = Image.open("assets/tps_photo_backup.ico")
+          available = set(ico.info.get("sizes", []))
+          expected = {(s, s) for s in sizes}
+          missing = expected - available
+          if missing:
+              raise SystemExit(f"ICO missing sizes: {sorted(missing)}")
+          print("ICO sizes:", sorted(available))
           '@ | Set-Content -Encoding UTF8 make_icon.py
           python make_icon.py
 
       - name: Validate source
         shell: pwsh
         run: |
-          python -m py_compile main.py tps_backup\backup_engine.py tps_backup\dropbox_client.py tps_backup\eventlog.py tps_backup\storage.py tps_backup\ui.py
-          python -c "from tps_backup.ui import TPSApp, windows_camera_sd_candidates, windows_eject_removable_drive; required=['on_close','save_admin_settings','admin_connect_dropbox','start_pending_dropbox_sync','admin_add_event','monitor_sd_cards','sort_history_by','clear_history_filters','start_thumbnail_generation','apply_thumbnail','auto_sync_eventlog_queue','admin_test_eventlog','_on_mousewheel','on_issue_change','reset_import_screen','confirm_backup_details','auto_check_connections_on_load','apply_startup_connection_results']; missing=[x for x in required if not hasattr(TPSApp,x)]; assert not missing, f'Missing UI methods: {missing}'; assert callable(windows_camera_sd_candidates); assert callable(windows_eject_removable_drive); print('Source UI/SD detection/eject smoke check OK')"
+          python -m py_compile main.py tps_backup\autocorrect.py tps_backup\backup_engine.py tps_backup\dropbox_client.py tps_backup\eventlog.py tps_backup\storage.py tps_backup\ui.py
+          python -c "from tps_backup.ui import TPSApp, windows_camera_sd_candidates, windows_eject_removable_drive; required=['on_close','save_admin_settings','admin_connect_dropbox','start_pending_dropbox_sync','admin_add_event','monitor_sd_cards','sort_history_by','clear_history_filters','start_thumbnail_generation','apply_thumbnail','auto_sync_eventlog_queue','admin_test_eventlog','_on_mousewheel','on_issue_change','reset_import_screen','confirm_backup_details','auto_check_connections_on_load','apply_startup_connection_results','start_autocorrect_for_job','start_pending_autocorrect_sync','restore_selected_backup1_originals','update_backup_mode_labels']; missing=[x for x in required if not hasattr(TPSApp,x)]; assert not missing, f'Missing UI methods: {missing}'; assert callable(windows_camera_sd_candidates); assert callable(windows_eject_removable_drive); print('Source UI/SD detection/eject smoke check OK')"
           python -c "import dropbox; print('Dropbox SDK', dropbox.__version__)"
           python -c "from tps_backup.eventlog import EventLogClient; from tps_backup.storage import Storage; ok,msg=EventLogClient(Storage()).test_connection(); print('Event Log API:', ok, msg); assert ok"
           python -c "import compileall; assert compileall.compile_dir('.', quiet=1); from tps_backup.ui import TPSApp; assert hasattr(TPSApp,'on_close'); print('FINAL SOURCE VALIDATION OK')"
+
+      - name: Test reversible Auto Correct safety workflow
+        shell: pwsh
+        run: |
+          python tests\test_autocorrect_mode.py
 
       - name: Build standalone EXE with explicit TPS package inclusion
         shell: pwsh
@@ -135,7 +174,7 @@ jobs:
         run: |
           pyi-archive_viewer -l -r "dist\TPS Photo Import & Backup.exe" | Tee-Object -FilePath pyinstaller-archive.txt
           $archive = Get-Content pyinstaller-archive.txt -Raw
-          foreach ($module in @("tps_backup.ui", "tps_backup.backup_engine", "tps_backup.storage", "tps_backup.dropbox_client", "tps_backup.eventlog")) {
+          foreach ($module in @("tps_backup.ui", "tps_backup.autocorrect", "tps_backup.backup_engine", "tps_backup.storage", "tps_backup.dropbox_client", "tps_backup.eventlog")) {
             if ($archive -notmatch [regex]::Escape($module)) {
               throw "Compiled EXE archive is missing required module: $module"
             }
@@ -169,10 +208,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TPS-Photo-Import-Backup-Windows-v1.2.3
+          name: TPS-Photo-Import-Backup-Windows-v1.3.0
           path: |
             photo-import-backup/dist/TPS Photo Import & Backup.exe
-            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.2.3.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.3.0.exe
           if-no-files-found: error
 
-# v1.2.3 confirmation + automatic startup connection checks
+# v1.3.0 reversible Backup 1 Auto Correct + pixel-sharp SD-card icon
