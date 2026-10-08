@@ -1173,6 +1173,7 @@ class TPSApp(tk.Tk):
                         self.backup_status_labels[1].configure(text="Auto Correct verified ✓", fg=GREEN)
                     self.refresh_history()
                     self.start_dropbox_for_job(job_id)
+                    self.after(2500, self.start_pending_dropbox_sync)
                 elif kind == "autocorrect_error":
                     job_id, err = payload
                     self.engine.mark_autocorrect_failed(job_id, err)
@@ -1668,6 +1669,9 @@ class TPSApp(tk.Tk):
                 self.history_tree.heading(col, text=label + arrow, command=lambda c=col: self.sort_history_by(c))
 
     def restore_selected_backup1_originals(self):
+        if self.autocorrect_thread and self.autocorrect_thread.is_alive():
+            messagebox.showwarning("Auto Correct still running", "Wait for the current Auto Correct job to finish before restoring Backup 1 originals.", parent=self)
+            return
         sel = self.history_tree.selection()
         if not sel:
             messagebox.showwarning("Select a job", "Choose an Auto Correct backup job first.", parent=self)
