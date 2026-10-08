@@ -612,8 +612,10 @@ class TPSApp(tk.Tk):
 
     def on_event_change(self):
         name = self.event_var.get()
+        matched = False
         for e in self.storage.get_setting("events", []):
             if e["name"] == name:
+                matched = True
                 self.time_combo["values"] = e.get("times", [])
                 if e.get("times"):
                     self.time_var.set(e["times"][0])
@@ -622,6 +624,11 @@ class TPSApp(tk.Tk):
                 if hasattr(self, "quantity_label"):
                     self.quantity_label.configure(text="Number of bikes" if e.get("code", "").upper() == "ATV" else "Number of guests")
                 break
+        if not matched:
+            self.time_combo["values"] = []
+            self.time_var.set("")
+            if hasattr(self, "quantity_label"):
+                self.quantity_label.configure(text="Number of guests")
 
     def on_issue_change(self):
         has_issue = self.issue_var.get().strip() != "No issues"
@@ -927,7 +934,7 @@ class TPSApp(tk.Tk):
         issue = self.issue_var.get().strip() or "No issues"
 
         summary = (
-            "Please confirm these event details before the backup starts:\n\n"
+            "Please confirm all manual details before BACK UP & COMPLETE starts:\n\n"
             f"Date: {self.date_var.get().strip()}\n"
             f"Photographer: {self.photographer_var.get().strip()} ({self.initials_var.get().strip()})\n"
             f"Event: {self.event_var.get().strip()}\n"
@@ -938,9 +945,9 @@ class TPSApp(tk.Tk):
             f"Photos selected: {len(selected)}\n"
             f"Photos excluded: {excluded}\n"
             f"Delete imported SD files after verification: {'Yes — final confirmation will still be required' if self.delete_var.get() else 'No'}\n\n"
-            "Are these details correct and ready to back up?"
+            "Proceed with BACK UP & COMPLETE using these details?"
         )
-        return messagebox.askyesno("Confirm event details", summary, parent=self, icon="question")
+        return messagebox.askyesno("Confirm BACK UP & COMPLETE", summary, parent=self, icon="question")
 
     def auto_check_connections_on_load(self):
         """Check local backups, Dropbox and Event Log on startup without freezing the UI."""
@@ -1185,6 +1192,20 @@ class TPSApp(tk.Tk):
         self.guests_var.set("")
         self.issue_var.set("No issues")
         self.notes_var.set("")
+
+        # Clear the visible widget state as well as the StringVars. This prevents
+        # the previous event's ATV bike count/time/selection from surviving visually.
+        if hasattr(self, "photographer_combo"):
+            self.photographer_combo.set("")
+        if hasattr(self, "event_combo"):
+            self.event_combo.set("")
+        if hasattr(self, "time_combo"):
+            self.time_combo.set("")
+            self.time_combo["values"] = []
+        if hasattr(self, "quantity_label"):
+            self.quantity_label.configure(text="Number of guests")
+        if hasattr(self, "issue_combo"):
+            self.issue_combo.set("No issues")
         self.on_issue_change()
 
         self.range_start.set("")
@@ -1236,24 +1257,18 @@ class TPSApp(tk.Tk):
                     source_root = manifest.get("source_path", self.source_var.get().strip())
                     ejected, eject_message = windows_eject_removable_drive(source_root)
                     if ejected:
-                        self.reset_import_screen("SD CARD EJECTED ✓ — ready for the next card.")
-                        messagebox.showinfo(
-                            "Import complete",
-                            f"{selected_n} imported JPEGs were deleted after 2/2 local verification.\n"
-                            f"{excluded_n} excluded file(s) were left untouched.\n\n"
-                            f"{eject_message}.\nThe Import Event screen has been reset and is ready for the next SD card.\n\n"
-                            "Dropbox and Event Log can continue independently in the background.",
-                            parent=self,
-                        )
+                        # No second success dialog: the user already confirmed deletion.
+                        # Reset immediately so the next photographer starts from a clean form.
+                        self.reset_import_screen("IMPORT COMPLETE ✓ — SD card cleared and ejected. Ready for the next card.")
+                        self.after(250, self.auto_check_connections_on_load)
                     else:
                         self.reset_import_screen("IMPORT COMPLETE ✓ — remove the SD card manually when ready.")
+                        self.after(250, self.auto_check_connections_on_load)
                         messagebox.showwarning(
-                            "Photos deleted — remove SD card manually",
-                            f"{selected_n} imported JPEGs were deleted after 2/2 local verification.\n"
-                            f"{excluded_n} excluded file(s) remain on the card.\n\n"
-                            f"Windows could not automatically eject the card:\n{eject_message}\n\n"
-                            "No further access to the SD card is required. Remove it manually, then insert the next card.\n"
-                            "The Import Event screen has already been reset.",
+                            "Remove SD card manually",
+                            f"The imported JPEGs were deleted successfully, but Windows could not automatically eject the card:\n\n"
+                            f"{eject_message}\n\n"
+                            "The system has already reset for the next event. Remove this card manually before inserting another.",
                             parent=self,
                         )
                 except Exception as exc:
