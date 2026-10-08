@@ -1159,7 +1159,8 @@ class TPSApp(tk.Tk):
                 elif kind == "history_done":
                     self.set_banner(payload, GREEN)
                     self.refresh_history()
-                    self.start_pending_dropbox_sync()
+                    self.start_pending_autocorrect_sync()
+                    self.after(2500, self.start_pending_dropbox_sync)
                 elif kind == "history_error":
                     messagebox.showerror("Could not complete backup", payload, parent=self)
                 elif kind == "autocorrect_progress":
