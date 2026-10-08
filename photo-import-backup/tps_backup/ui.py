@@ -1705,7 +1705,17 @@ class TPSApp(tk.Tk):
         people = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         people.grid(row=3, column=0, sticky="ew", pady=(0, 12))
         people.grid_columnconfigure(0, weight=1)
-        tk.Label(people, text="PHOTOGRAPHERS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14,8))
+        people_header = tk.Frame(people, bg=CARD)
+        people_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14,8))
+        tk.Label(people_header, text="PHOTOGRAPHERS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).pack(side="left")
+        self.reference_sync_status = tk.Label(
+            people_header,
+            text="Photographers + Events • local cache",
+            bg=CARD,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+        )
+        self.reference_sync_status.pack(side="right")
         self.people_tree = ttk.Treeview(people, columns=("name","initials"), show="headings", height=7)
         self.people_tree.heading("name", text="Name")
         self.people_tree.heading("initials", text="Initials")
@@ -1717,11 +1727,15 @@ class TPSApp(tk.Tk):
         ttk.Button(pb, text="Add", style="Secondary.TButton", command=self.admin_add_person).pack(side="left")
         ttk.Button(pb, text="Edit", style="Secondary.TButton", command=self.admin_edit_person).pack(side="left", padx=6)
         ttk.Button(pb, text="Remove", style="Secondary.TButton", command=self.admin_remove_person).pack(side="left")
+        ttk.Button(pb, text="Sync shared lists now", style="Secondary.TButton", command=lambda: self.auto_sync_reference_data(show_result=True)).pack(side="left", padx=(14,0))
 
         events = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         events.grid(row=4, column=0, sticky="ew", pady=(0, 12))
         events.grid_columnconfigure(0, weight=1)
-        tk.Label(events, text="EVENT TYPES", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=16, pady=(14,8))
+        events_header = tk.Frame(events, bg=CARD)
+        events_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(14,8))
+        tk.Label(events_header, text="EVENT TYPES", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).pack(side="left")
+        tk.Label(events_header, text="Shared across all Photo Import computers", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).pack(side="right")
         self.events_tree = ttk.Treeview(events, columns=("name","code","times","guests"), show="headings", height=7)
         for c, text, w in [("name","Event",220),("code","Code",80),("times","Standard times",340),("guests","Guests required",120)]:
             self.events_tree.heading(c, text=text); self.events_tree.column(c, width=w)
