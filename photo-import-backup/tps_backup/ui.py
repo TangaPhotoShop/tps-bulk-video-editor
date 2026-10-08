@@ -894,6 +894,7 @@ class TPSApp(tk.Tk):
         return sum(p.size for p in getattr(self, "photos", []) if p.selected)
 
     def check_network(self):
+        self.refresh_backup_destination_labels()
         total = self.selected_bytes()
         if total <= 0:
             total = 1
@@ -977,6 +978,7 @@ class TPSApp(tk.Tk):
 
     def auto_check_connections_on_load(self):
         """Check local backups, Dropbox and Event Log on startup without freezing the UI."""
+        self.refresh_backup_destination_labels()
         if self.backup_in_progress:
             return
 
@@ -1811,6 +1813,7 @@ class TPSApp(tk.Tk):
         self.storage.set_setting("delete_after_verified_default", bool(self.admin_delete_default_var.get()))
         self.delete_var.set(bool(self.admin_delete_default_var.get()))
         self.load_reference_data()
+        self.refresh_backup_destination_labels()
         if show_message:
             messagebox.showinfo("Admin settings", "Settings saved. Staff cannot edit the configured backup locations from the Import screen.", parent=self)
 
@@ -1890,27 +1893,39 @@ class TPSApp(tk.Tk):
             self.backup_status_labels[3].configure(text="Not connected • cloud backups remain pending", fg=ORANGE)
 
     def start_dropbox_for_job(self, job_id: str):
-        if not self.dropbox.configured():
+        if not self.dropbox.configured() or self.closing:
             return
         if self.dropbox_thread and self.dropbox_thread.is_alive():
             return
 
+        self.dropbox_stop_event.clear()
+        self.dropbox_current_job_id = job_id
+
         def progress(done, total, name):
-            self.msg_queue.put(("dropbox_progress", (job_id, done, total, name)))
+            if not self.closing:
+                self.msg_queue.put(("dropbox_progress", (job_id, done, total, name)))
 
         def worker():
             try:
-                self.dropbox.upload_job(job_id, progress)
-                self.msg_queue.put(("dropbox_done", job_id))
+                self.dropbox.upload_job(job_id, progress, self.dropbox_stop_event)
+                if not self.closing:
+                    self.msg_queue.put(("dropbox_done", job_id))
+            except DropboxUploadPaused:
+                # Normal shutdown path: the manifest is already persisted as pending.
+                pass
             except Exception as exc:
                 self.dropbox.mark_error(job_id, str(exc))
-                self.msg_queue.put(("dropbox_error", (job_id, str(exc))))
+                if not self.closing:
+                    self.msg_queue.put(("dropbox_error", (job_id, str(exc))))
+            finally:
+                if self.dropbox_current_job_id == job_id:
+                    self.dropbox_current_job_id = None
 
         self.dropbox_thread = threading.Thread(target=worker, daemon=True, name="TPSDropboxUpload")
         self.dropbox_thread.start()
 
     def start_pending_dropbox_sync(self):
-        if not self.dropbox.configured():
+        if not self.dropbox.configured() or self.closing:
             return
         if self.dropbox_thread and self.dropbox_thread.is_alive():
             return
@@ -1918,27 +1933,72 @@ class TPSApp(tk.Tk):
         if not pending:
             return
 
-        def progress(done, total, name):
-            self.msg_queue.put(("dropbox_progress", (pending[0], done, total, name)))
+        self.dropbox_stop_event.clear()
 
         def worker():
             for job_id in pending:
+                if self.dropbox_stop_event.is_set() or self.closing:
+                    break
+                self.dropbox_current_job_id = job_id
+
+                def progress(done, total, name, current_job=job_id):
+                    if not self.closing:
+                        self.msg_queue.put(("dropbox_progress", (current_job, done, total, name)))
+
                 try:
-                    self.dropbox.upload_job(job_id, progress)
-                    self.msg_queue.put(("dropbox_done", job_id))
+                    self.dropbox.upload_job(job_id, progress, self.dropbox_stop_event)
+                    if not self.closing:
+                        self.msg_queue.put(("dropbox_done", job_id))
+                except DropboxUploadPaused:
+                    break
                 except Exception as exc:
                     self.dropbox.mark_error(job_id, str(exc))
-                    self.msg_queue.put(("dropbox_error", (job_id, str(exc))))
-                    # Most failures are connectivity/auth related; wait for next launch/manual test.
+                    if not self.closing:
+                        self.msg_queue.put(("dropbox_error", (job_id, str(exc))))
+                    # Connectivity/auth issues are retried next launch/manual test.
                     break
+                finally:
+                    if self.dropbox_current_job_id == job_id:
+                        self.dropbox_current_job_id = None
 
         self.dropbox_thread = threading.Thread(target=worker, daemon=True, name="TPSDropboxPending")
         self.dropbox_thread.start()
 
     def on_close(self):
+        # Never allow the application to close during the two required local copies.
+        if self.backup_in_progress:
+            messagebox.showwarning(
+                "Local backup still running",
+                "Please wait until Backup 1 and Backup 2 have finished and verified before closing the application.\n\n"
+                "Dropbox uploads may be paused safely after local backup completion.",
+                parent=self,
+            )
+            return
+
         cloud_running = bool(self.dropbox_thread and self.dropbox_thread.is_alive())
-        msg = "Exit the application?"
         if cloud_running:
-            msg = "A Dropbox upload is still in progress.\n\nYou can still exit safely: both local backups are already verified and the Dropbox upload will resume next time the app starts.\n\nExit now?"
-        if messagebox.askokcancel("Exit TPS Photo Import", msg, parent=self):
+            yes = messagebox.askyesno(
+                "Pause Dropbox upload and exit?",
+                "Dropbox is still uploading files.\n\n"
+                "You can exit safely now. The uploaded-file checkpoint and remaining job will be saved, "
+                "and Dropbox will resume automatically the next time this program opens.\n\n"
+                "Exit now?",
+                parent=self,
+            )
+            if not yes:
+                return
+
+            self.closing = True
+            current_job = self.dropbox_current_job_id
+            if current_job:
+                try:
+                    self.dropbox.pause_job(current_job, "Application closed by user")
+                except Exception:
+                    pass
+            self.dropbox_stop_event.set()
+            self.destroy()
+            return
+
+        if messagebox.askokcancel("Exit TPS Photo Import", "Exit the application?", parent=self):
+            self.closing = True
             self.destroy()
