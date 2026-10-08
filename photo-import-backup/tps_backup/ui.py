@@ -238,9 +238,9 @@ class TPSApp(tk.Tk):
         self.after(300, self.poll_queue)
         self.after(700, lambda: self.monitor_sd_cards(initial=True))
         self.after(1000, self.auto_check_connections_on_load)
-        self.after(1800, self.start_pending_dropbox_sync)
+        self.after(1800, self.start_pending_autocorrect_sync)
         self.after(2600, self.auto_sync_eventlog_queue)
-        self.after(3400, self.start_pending_autocorrect_sync)
+        self.after(4200, self.start_pending_dropbox_sync)
 
     def _style(self):
         style = ttk.Style(self)
@@ -1166,11 +1166,14 @@ class TPSApp(tk.Tk):
                     if hasattr(self, "backup_status_labels") and self.source_var.get().strip():
                         self.backup_status_labels[1].configure(text="Auto Correct verified ✓", fg=GREEN)
                     self.refresh_history()
+                    self.start_dropbox_for_job(job_id)
                 elif kind == "autocorrect_error":
                     job_id, err = payload
+                    self.engine.mark_autocorrect_failed(job_id, err)
                     if hasattr(self, "backup_status_labels") and self.source_var.get().strip():
                         self.backup_status_labels[1].configure(text="Auto Correct failed • originals safe", fg=RED)
                     self.refresh_history()
+                    self.start_dropbox_for_job(job_id)
                     if self.current_page == "history":
                         messagebox.showwarning("Auto Correct", f"Auto Correct could not complete. Untouched originals remain safe in Backup 2 / Dropbox workflow.\n\n{err}", parent=self)
                 elif kind == "restore_backup1_done":
@@ -1316,11 +1319,10 @@ class TPSApp(tk.Tk):
         if auto_mode:
             self.start_autocorrect_for_job(manifest["job_id"])
             if self.dropbox.configured():
-                self.start_dropbox_for_job(manifest["job_id"])
-                cloud_note = "Dropbox original upload has started in the background."
+                cloud_note = "Dropbox original upload will start automatically after Auto Correct finishes."
             else:
                 cloud_note = "Dropbox is not connected; the temporary original safety copy will remain until Dropbox can verify."
-            self.set_banner("ORIGINALS SAFE ✓ — Backup 2 + temporary originals verified. Auto Correct and Dropbox are continuing.", GREEN)
+            self.set_banner("ORIGINALS SAFE ✓ — Backup 2 + temporary originals verified. Backup 1 Auto Correct is processing.", GREEN)
         else:
             if self.dropbox.configured():
                 self.set_banner("2/2 LOCAL VERIFIED — safe to remove/clear the SD card. Dropbox is uploading in the background.", GREEN)
