@@ -1853,33 +1853,48 @@ class TPSApp(tk.Tk):
             self.people_tree.insert("", "end", iid=str(i), values=(p["name"], p["initials"]))
 
     def admin_add_person(self):
+        if not self._can_edit_shared_reference():
+            return
         name = simpledialog.askstring("Add photographer", "Name", parent=self)
         if not name: return
         initials = simpledialog.askstring("Add photographer", "Initials", parent=self)
         if not initials: return
-        people = self.storage.get_setting("photographers", [])
+        old_people = copy.deepcopy(self.storage.get_setting("photographers", []))
+        old_events = copy.deepcopy(self.storage.get_setting("events", []))
+        people = copy.deepcopy(old_people)
         people.append({"name": name.strip(), "initials": initials.strip().upper()})
-        self.storage.set_setting("photographers", people)
-        self.refresh_admin_people()
+        self._commit_shared_reference_change(people, old_events, old_people, old_events)
 
     def admin_edit_person(self):
+        if not self._can_edit_shared_reference():
+            return
         sel = self.people_tree.selection()
         if not sel: return
-        idx = int(sel[0]); people = self.storage.get_setting("photographers", [])
+        idx = int(sel[0])
+        old_people = copy.deepcopy(self.storage.get_setting("photographers", []))
+        old_events = copy.deepcopy(self.storage.get_setting("events", []))
+        people = copy.deepcopy(old_people)
         p = people[idx]
         name = simpledialog.askstring("Edit photographer", "Name", initialvalue=p["name"], parent=self)
         if not name: return
         initials = simpledialog.askstring("Edit photographer", "Initials", initialvalue=p["initials"], parent=self)
         if not initials: return
         people[idx] = {"name": name.strip(), "initials": initials.strip().upper()}
-        self.storage.set_setting("photographers", people); self.refresh_admin_people()
+        self._commit_shared_reference_change(people, old_events, old_people, old_events)
 
     def admin_remove_person(self):
+        if not self._can_edit_shared_reference():
+            return
         sel = self.people_tree.selection()
         if not sel: return
-        people = self.storage.get_setting("photographers", [])
+        old_people = copy.deepcopy(self.storage.get_setting("photographers", []))
+        old_events = copy.deepcopy(self.storage.get_setting("events", []))
+        people = copy.deepcopy(old_people)
         del people[int(sel[0])]
-        self.storage.set_setting("photographers", people); self.refresh_admin_people()
+        if not people:
+            messagebox.showwarning("Photographers", "At least one photographer must remain in the shared list.", parent=self)
+            return
+        self._commit_shared_reference_change(people, old_events, old_people, old_events)
 
     def refresh_admin_events(self):
         self.events_tree.delete(*self.events_tree.get_children())
@@ -1897,22 +1912,43 @@ class TPSApp(tk.Tk):
         return {"name": name.strip(), "code": code.strip().upper(), "times": [x.strip() for x in times.split(",") if x.strip()], "guests_required": guests}
 
     def admin_add_event(self):
+        if not self._can_edit_shared_reference():
+            return
         e = self._event_dialog()
         if not e: return
-        events = self.storage.get_setting("events", []); events.append(e); self.storage.set_setting("events", events); self.refresh_admin_events()
+        old_people = copy.deepcopy(self.storage.get_setting("photographers", []))
+        old_events = copy.deepcopy(self.storage.get_setting("events", []))
+        events = copy.deepcopy(old_events)
+        events.append(e)
+        self._commit_shared_reference_change(old_people, events, old_people, old_events)
 
     def admin_edit_event(self):
+        if not self._can_edit_shared_reference():
+            return
         sel = self.events_tree.selection()
         if not sel: return
-        idx = int(sel[0]); events = self.storage.get_setting("events", [])
+        idx = int(sel[0])
+        old_people = copy.deepcopy(self.storage.get_setting("photographers", []))
+        old_events = copy.deepcopy(self.storage.get_setting("events", []))
+        events = copy.deepcopy(old_events)
         e = self._event_dialog(events[idx])
         if not e: return
-        events[idx] = e; self.storage.set_setting("events", events); self.refresh_admin_events()
+        events[idx] = e
+        self._commit_shared_reference_change(old_people, events, old_people, old_events)
 
     def admin_remove_event(self):
+        if not self._can_edit_shared_reference():
+            return
         sel = self.events_tree.selection()
         if not sel: return
-        events = self.storage.get_setting("events", []); del events[int(sel[0])]; self.storage.set_setting("events", events); self.refresh_admin_events()
+        old_people = copy.deepcopy(self.storage.get_setting("photographers", []))
+        old_events = copy.deepcopy(self.storage.get_setting("events", []))
+        events = copy.deepcopy(old_events)
+        del events[int(sel[0])]
+        if not events:
+            messagebox.showwarning("Event Types", "At least one event type must remain in the shared list.", parent=self)
+            return
+        self._commit_shared_reference_change(old_people, events, old_people, old_events)
 
     def save_admin_settings(self, show_message: bool = True):
         for key, var in self.admin_path_vars.items():
