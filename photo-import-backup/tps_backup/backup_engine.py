@@ -1040,17 +1040,33 @@ class BackupEngine:
 
         if manifest.get("backup_mode") == "auto_correct":
             backups = manifest.get("backups", {})
-            for key in ("backup2", "staging"):
-                info = backups.get(key, {})
-                if info.get("status") != "verified":
-                    raise BackupError(f"SD deletion blocked: {key} originals are not verified")
-                folder = Path(info.get("path", ""))
-                if not folder.exists():
-                    raise BackupError(f"SD deletion blocked: connection lost to {key}")
-                self._verify_manifest_files(folder, files)
-                self._verify_folder_count(folder, len(files))
-            if path_network_identity(Path(backups["backup2"]["path"])) == path_network_identity(Path(backups["staging"]["path"])):
-                raise BackupError("SD deletion blocked: the two exact original copies are on the same drive/share")
+
+            b2 = backups.get("backup2", {})
+            if b2.get("status") != "verified":
+                raise BackupError("SD deletion blocked: Backup 2 originals are not verified")
+            b2_folder = Path(b2.get("path", ""))
+            if not b2_folder.exists():
+                raise BackupError("SD deletion blocked: connection lost to Backup 2")
+            self._verify_manifest_files(b2_folder, files)
+            self._verify_folder_count(b2_folder, len(files))
+
+            staging = backups.get("staging", {})
+            cloud = backups.get("dropbox", {})
+            if staging.get("status") == "verified":
+                staging_folder = Path(staging.get("path", ""))
+                if not staging_folder.exists():
+                    raise BackupError("SD deletion blocked: temporary original safety copy is not reachable")
+                self._verify_manifest_files(staging_folder, files)
+                self._verify_folder_count(staging_folder, len(files))
+                if path_network_identity(b2_folder) == path_network_identity(staging_folder):
+                    raise BackupError("SD deletion blocked: the two exact original copies are on the same drive/share")
+            elif cloud.get("status") == "verified":
+                # Dropbox verification uses Dropbox content hash + exact byte size for
+                # every original. It safely replaces the temporary staging copy once
+                # that staging folder is cleaned.
+                pass
+            else:
+                raise BackupError("SD deletion blocked: neither temporary originals nor Dropbox originals are verified")
         else:
             for key in ("backup1", "backup2"):
                 info = manifest.get("backups", {}).get(key, {})
