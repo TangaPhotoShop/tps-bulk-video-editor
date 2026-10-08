@@ -1744,15 +1744,38 @@ class TPSApp(tk.Tk):
         tk.Label(paths, text="BACKUP LOCATIONS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(14,8))
         self.admin_path_vars = {}
         for r, (key, label) in enumerate([
-            ("backup1_path", "Backup 1 — PRIMARY / priority"),
-            ("backup2_path", "Backup 2 — independent local/filesystem copy"),
-            ("emergency_path", "Emergency local backup"),
+            ("backup1_path", "Backup 1 — working / primary destination"),
+            ("backup2_path", "Backup 2 — original archive destination"),
+            ("emergency_path", "Emergency / temporary original safety location"),
         ], start=1):
             tk.Label(paths, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=r, column=0, sticky="w", padx=16, pady=7)
             var = tk.StringVar()
             self.admin_path_vars[key] = var
             ttk.Entry(paths, textvariable=var).grid(row=r, column=1, sticky="ew", padx=8, pady=7)
             ttk.Button(paths, text="Browse", style="Secondary.TButton", command=lambda v=var: self.admin_browse(v)).grid(row=r, column=2, padx=(0,16), pady=7)
+
+        tk.Label(paths, text="Backup 1 mode", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=4, column=0, sticky="w", padx=16, pady=7)
+        self.backup1_mode_var = tk.StringVar(value="Auto Correct working copies (experimental)")
+        self.backup1_mode_combo = ttk.Combobox(
+            paths,
+            textvariable=self.backup1_mode_var,
+            state="readonly",
+            values=[
+                "Auto Correct working copies (experimental)",
+                "Exact original backup (standard)",
+            ],
+            width=42,
+        )
+        self.backup1_mode_combo.grid(row=4, column=1, sticky="w", padx=8, pady=7)
+        tk.Label(
+            paths,
+            text="Reversible: switch back to Exact original backup at any time for future imports. In Auto Correct mode, Backup 2 + a temporary exact-original safety copy protect the card until Dropbox verifies. Existing corrected jobs can also restore Backup 1 from Backup 2 in Backup History.",
+            bg=CARD,
+            fg=MUTED,
+            font=("Segoe UI", 8),
+            wraplength=850,
+            justify="left",
+        ).grid(row=5, column=0, columnspan=3, sticky="w", padx=16, pady=(0,14))
 
         cloud = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         cloud.grid(row=1, column=0, sticky="ew", pady=(0, 12))
@@ -1841,6 +1864,9 @@ class TPSApp(tk.Tk):
             var.set(self.storage.get_setting(key, ""))
         if hasattr(self, "admin_delete_default_var"):
             self.admin_delete_default_var.set(bool(self.storage.get_setting("delete_after_verified_default", False)))
+            if hasattr(self, "backup1_mode_var"):
+                mode = str(self.storage.get_setting("backup1_mode", "auto_correct") or "auto_correct")
+                self.backup1_mode_var.set("Auto Correct working copies (experimental)" if mode == "auto_correct" else "Exact original backup (standard)")
             self.dropbox_app_key_var.set(self.storage.get_setting("dropbox_app_key", ""))
             self.refresh_dropbox_admin_status()
             self.refresh_eventlog_admin_status()
@@ -1918,9 +1944,12 @@ class TPSApp(tk.Tk):
         for key, var in self.admin_path_vars.items():
             self.storage.set_setting(key, var.get().strip())
         self.storage.set_setting("dropbox_app_key", self.dropbox_app_key_var.get().strip())
+        selected_mode = self.backup1_mode_var.get().strip() if hasattr(self, "backup1_mode_var") else "Exact original backup (standard)"
+        self.storage.set_setting("backup1_mode", "auto_correct" if selected_mode.startswith("Auto Correct") else "original")
         self.storage.set_setting("delete_after_verified_default", bool(self.admin_delete_default_var.get()))
         self.delete_var.set(bool(self.admin_delete_default_var.get()))
         self.load_reference_data()
+        self.update_backup_mode_labels()
         if show_message:
             messagebox.showinfo("Admin settings", "Settings saved. Staff cannot edit the configured backup locations from the Import screen.", parent=self)
 
