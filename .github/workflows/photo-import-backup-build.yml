@@ -180,6 +180,7 @@ jobs:
           python -c "from tps_backup.eventlog import EventLogClient; from tps_backup.storage import Storage; ok,msg=EventLogClient(Storage()).test_connection(); print('Event Log API:', ok, msg); assert ok"
           python -c "from tps_backup.reference_sync import ReferenceDataClient; from tps_backup.storage import Storage; d=ReferenceDataClient(Storage()).get(); print('Shared reference API:', d.get('initialized'), 'revision', d.get('revision')); assert d.get('ok')"
           python -c "import compileall; assert compileall.compile_dir('.', quiet=1); from tps_backup.ui import TPSApp; assert hasattr(TPSApp,'on_close'); print('FINAL SOURCE VALIDATION OK')"
+          python -c "from PIL import Image; im=Image.open('assets/tps_photo_backup.ico'); expected={(16,16),(20,20),(24,24),(32,32),(40,40),(48,48),(64,64),(128,128),(256,256)}; assert expected.issubset(set(im.info.get('sizes',[]))); print('SD TPS icon frames verified')"
 
       - name: Build standalone EXE with explicit TPS package inclusion
         shell: pwsh
@@ -239,10 +240,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TPS-Photo-Import-Backup-Windows-v1.2.7
+          name: TPS-Photo-Import-Backup-Windows-v1.2.8
           path: |
             photo-import-backup/dist/TPS Photo Import & Backup.exe
-            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.2.7.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.2.8.exe
           if-no-files-found: error
 
-# v1.2.7 shared photographers and events across devices
+# v1.2.8 force restored SD-card TPS icon across EXE and shortcuts
