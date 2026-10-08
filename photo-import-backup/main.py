@@ -49,7 +49,7 @@ if __name__ == "__main__":
     if sys.platform == "win32":
         try:
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                "TangaloomaPhotoShop.TPSPhotoImportBackup.SDTPSV3"
+                "TangaloomaPhotoShop.TPSPhotoImportBackup.SDTPSV4"
             )
         except Exception:
             pass
