@@ -226,7 +226,7 @@ jobs:
           }
           $result = Get-Content "tps_photo_import_self_test.txt" -Raw
           Write-Host $result
-          if ($result -notmatch "^OK 1\.2\.8") {
+          if ($result -notmatch "^OK 1\.2\.9") {
             throw "Unexpected compiled EXE self-test result: $result"
           }
 
