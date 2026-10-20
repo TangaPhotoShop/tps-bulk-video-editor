@@ -72,8 +72,18 @@ class ReferenceDataClient:
         events = data.get("events")
         if not isinstance(photographers, list) or not isinstance(events, list):
             raise ReferenceSyncError("Shared reference data returned an invalid response")
+
+        # Dolphin Feed uses feeding-lane groups rather than a clock time.
+        # Normalize older shared data so all v1.3+ computers cache the same slots.
+        normalized_events = []
+        for event in events:
+            item = dict(event) if isinstance(event, dict) else {}
+            if str(item.get("code", "")).upper() == "DOL":
+                item["times"] = ["L12", "L34", "L56"]
+            normalized_events.append(item)
+
         self.storage.set_setting("photographers", photographers)
-        self.storage.set_setting("events", events)
+        self.storage.set_setting("events", normalized_events)
         self.storage.set_setting("reference_revision", int(data.get("revision") or 0))
         self.storage.set_setting("reference_updated_at", data.get("updatedAt") or "")
         self.storage.set_setting("reference_last_sync_at", datetime.now(timezone.utc).isoformat())
