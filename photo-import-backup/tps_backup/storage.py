@@ -54,7 +54,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "events": [
         {"name": "Desert Safari", "code": "SAND", "times": ["09:15", "11:00", "13:30", "15:15"], "guests_required": True},
         {"name": "ATV Quad Bikes", "code": "ATV", "times": ["09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00"], "guests_required": True},
-        {"name": "Dolphin Feed", "code": "DOL", "times": ["18:00"], "guests_required": False},
+        {"name": "Dolphin Feed", "code": "DOL", "times": ["L12", "L34", "L56"], "guests_required": False},
         {"name": "Sunset Photos", "code": "SUN", "times": ["17:00"], "guests_required": False},
         {"name": "Group Photos", "code": "GROUP", "times": [], "guests_required": False},
         {"name": "Other", "code": "OTHER", "times": [], "guests_required": False},
