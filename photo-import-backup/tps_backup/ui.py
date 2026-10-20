@@ -449,7 +449,8 @@ class TPSApp(tk.Tk):
                 ent = ttk.Entry(event, textvariable=var, width=16, state="readonly" if label == "Initials" else "normal")
                 ent.grid(row=2, column=col, columnspan=2, sticky="ew", padx=(18 if col == 0 else 8, 8), pady=(2, 12))
 
-        tk.Label(event, text="Event time", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(row=3, column=0, sticky="w", padx=18)
+        self.time_label = tk.Label(event, text="Event time", bg=CARD, fg=MUTED, font=("Segoe UI", 8))
+        self.time_label.grid(row=3, column=0, sticky="w", padx=18)
         self.time_combo = ttk.Combobox(event, textvariable=self.time_var, state="normal", width=16)
         self.time_combo.grid(row=4, column=0, columnspan=2, sticky="ew", padx=(18, 8), pady=(2, 14))
         self.quantity_label = tk.Label(event, text="Number of guests", bg=CARD, fg=MUTED, font=("Segoe UI", 8))
@@ -661,17 +662,36 @@ class TPSApp(tk.Tk):
         for e in self.storage.get_setting("events", []):
             if e["name"] == name:
                 matched = True
-                self.time_combo["values"] = e.get("times", [])
-                if e.get("times"):
-                    self.time_var.set(e["times"][0])
-                elif not self.time_var.get():
+                code = e.get("code", "").upper()
+
+                if code == "DOL":
+                    # Dolphin Feed is grouped by feeding lanes, not by clock time.
+                    # Require staff to deliberately choose the correct group.
+                    self.time_combo["values"] = ["L12", "L34", "L56"]
+                    self.time_combo.configure(state="readonly")
                     self.time_var.set("")
+                    if hasattr(self, "time_label"):
+                        self.time_label.configure(text="Dolphin feed group")
+                else:
+                    self.time_combo["values"] = e.get("times", [])
+                    self.time_combo.configure(state="normal")
+                    if e.get("times"):
+                        self.time_var.set(e["times"][0])
+                    else:
+                        self.time_var.set("")
+                    if hasattr(self, "time_label"):
+                        self.time_label.configure(text="Event time")
+
                 if hasattr(self, "quantity_label"):
-                    self.quantity_label.configure(text="Number of bikes" if e.get("code", "").upper() == "ATV" else "Number of guests")
+                    self.quantity_label.configure(text="Number of bikes" if code == "ATV" else "Number of guests")
                 break
+
         if not matched:
             self.time_combo["values"] = []
+            self.time_combo.configure(state="normal")
             self.time_var.set("")
+            if hasattr(self, "time_label"):
+                self.time_label.configure(text="Event time")
             if hasattr(self, "quantity_label"):
                 self.quantity_label.configure(text="Number of guests")
 
@@ -942,9 +962,12 @@ class TPSApp(tk.Tk):
             return "Choose a photographer."
         if not self.event_var.get():
             return "Choose an event."
-        if not self.time_var.get().strip():
-            return "Enter an event time."
         ev = self.current_event()
+        if ev.get("code", "").upper() == "DOL":
+            if self.time_var.get().strip().upper() not in {"L12", "L34", "L56"}:
+                return "Choose the Dolphin feed group: L12, L34 or L56."
+        elif not self.time_var.get().strip():
+            return "Enter an event time."
         if ev.get("guests_required") and not self.guests_var.get().strip():
             return "Number of bikes is required for ATV Quad Bikes." if ev.get("code", "").upper() == "ATV" else "Number of guests is required for this event."
         if self.guests_var.get().strip():
@@ -973,8 +996,11 @@ class TPSApp(tk.Tk):
         ev = self.current_event()
         selected = [p for p in getattr(self, "photos", []) if p.selected]
         excluded = len(getattr(self, "photos", [])) - len(selected)
-        is_atv = str(ev.get("code", "")).upper() == "ATV"
+        event_code = str(ev.get("code", "")).upper()
+        is_atv = event_code == "ATV"
+        is_dolphin = event_code == "DOL"
         quantity_label = "Number of bikes" if is_atv else "Number of guests"
+        event_slot_label = "Dolphin feed group" if is_dolphin else "Event time"
         quantity_value = self.guests_var.get().strip() or "Not entered"
         notes = self.notes_var.get().strip() or "None"
         issue = self.issue_var.get().strip() or "No issues"
@@ -984,7 +1010,7 @@ class TPSApp(tk.Tk):
             f"Date: {self.date_var.get().strip()}\n"
             f"Photographer: {self.photographer_var.get().strip()} ({self.initials_var.get().strip()})\n"
             f"Event: {self.event_var.get().strip()}\n"
-            f"Event time: {self.time_var.get().strip()}\n"
+            f"{event_slot_label}: {self.time_var.get().strip()}\n"
             f"{quantity_label}: {quantity_value}\n"
             f"Issue: {issue}\n"
             f"Issue / notes: {notes}\n\n"
@@ -1327,8 +1353,11 @@ class TPSApp(tk.Tk):
         if hasattr(self, "event_combo"):
             self.event_combo.set("")
         if hasattr(self, "time_combo"):
+            self.time_combo.configure(state="normal")
             self.time_combo.set("")
             self.time_combo["values"] = []
+        if hasattr(self, "time_label"):
+            self.time_label.configure(text="Event time")
         if hasattr(self, "quantity_label"):
             self.quantity_label.configure(text="Number of guests")
         if hasattr(self, "issue_combo"):
