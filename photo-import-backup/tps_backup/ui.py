@@ -2023,7 +2023,9 @@ class TPSApp(tk.Tk):
     def refresh_admin_events(self):
         self.events_tree.delete(*self.events_tree.get_children())
         for i, e in enumerate(self.storage.get_setting("events", [])):
-            self.events_tree.insert("", "end", iid=str(i), values=(e["name"], e["code"], ", ".join(e.get("times", [])), "Yes" if e.get("guests_required") else "No"))
+            code = str(e.get("code", "")).upper()
+            slots = ["L12", "L34", "L56"] if code == "DOL" else e.get("times", [])
+            self.events_tree.insert("", "end", iid=str(i), values=(e["name"], e["code"], ", ".join(slots), "Yes" if e.get("guests_required") else "No"))
 
     def _event_dialog(self, existing=None):
         existing = existing or {"name":"", "code":"", "times":[], "guests_required":False}
@@ -2031,9 +2033,15 @@ class TPSApp(tk.Tk):
         if not name: return None
         code = simpledialog.askstring("Event", "Filename code (e.g. SAND)", initialvalue=existing["code"], parent=self)
         if not code: return None
-        times = simpledialog.askstring("Event", "Standard times, comma separated (optional)", initialvalue=", ".join(existing.get("times", [])), parent=self) or ""
+        code = code.strip().upper()
+        if code == "DOL":
+            # Dolphin Feed group IDs are fixed because they form part of the archive filename.
+            times_list = ["L12", "L34", "L56"]
+        else:
+            times = simpledialog.askstring("Event", "Standard times, comma separated (optional)", initialvalue=", ".join(existing.get("times", [])), parent=self) or ""
+            times_list = [x.strip() for x in times.split(",") if x.strip()]
         guests = messagebox.askyesno("Number of guests", "Require Number of Guests for this event?", parent=self)
-        return {"name": name.strip(), "code": code.strip().upper(), "times": [x.strip() for x in times.split(",") if x.strip()], "guests_required": guests}
+        return {"name": name.strip(), "code": code, "times": times_list, "guests_required": guests}
 
     def admin_add_event(self):
         if not self._can_edit_shared_reference():
