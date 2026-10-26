@@ -1165,6 +1165,11 @@ class TPSApp(tk.Tk):
                     self.handle_progress(payload)
                 elif kind == "done":
                     self.handle_done(*payload)
+                elif kind == "sd_delete_done":
+                    self.handle_sd_delete_done(payload)
+                elif kind == "sd_delete_error":
+                    manifest, err = payload
+                    self.handle_sd_delete_error(manifest, err)
                 elif kind == "error":
                     self.set_busy(False)
                     self.set_banner("Backup interrupted — originals remain on the SD card.", RED)
@@ -1306,8 +1311,14 @@ class TPSApp(tk.Tk):
             self.progress_text.configure(text=f"{ev.message} • {ev.current}/{ev.total}")
         else:
             self.progress_text.configure(text=ev.message)
-        if ev.stage == "primary_ready":
-            self.set_banner("PRIMARY BACKUP READY ✓ — Backup 2 is continuing. Do not clear the SD card yet.", GREEN)
+        if ev.stage == "local_cache_ready":
+            self.set_banner("LOCAL SAFETY COPY VERIFIED ✓ — waiting for shared network backups. Keep the SD card inserted.", GREEN)
+        elif ev.stage == "waiting_network":
+            self.set_banner("LOCAL SAFETY COPY VERIFIED ✓ — waiting for an available TPS network slot. Keep the SD card inserted.", ORANGE)
+        elif ev.stage == "final_verify":
+            self.set_banner("FINAL THREE-COPY SAFETY CHECK — re-verifying every file before SD deletion.", BLUE)
+        elif ev.stage == "sd_delete":
+            self.set_banner("THREE COPIES VERIFIED ✓ — clearing only the verified imported files from the SD card.", GREEN)
 
     def reset_import_screen(self, banner_text: str = "Ready — insert an SD card."):
         """Clear only the per-event/import state; keep Admin, Dropbox and system configuration."""
