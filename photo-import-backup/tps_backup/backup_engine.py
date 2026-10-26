@@ -562,35 +562,38 @@ class BackupEngine:
             cb(ProgressEvent(**kwargs))
 
     def run_normal(self, spec: BackupJobSpec, progress: Callable[[ProgressEvent], None] | None = None) -> dict[str, Any]:
-        """Create two independently verified filesystem copies, then release the SD card.
+        """Create a verified local safety copy first, then two sequential network copies.
 
-        Dropbox is intentionally asynchronous and is uploaded later from verified Backup 1,
-        so cloud speed or internet availability never holds the photographer or SD card.
+        The SD card is never deleted here. The UI asks for a separate final confirmation,
+        and delete_verified_sources() then re-hashes all three copies immediately before
+        removing any original from the card.
         """
         self.reset_cancel()
         folder_name, photos = self._build_names(spec)
         selected = [p for p in photos if p.selected]
         if not selected:
             raise BackupError("No photos selected")
-        total_bytes = sum(p.size for p in selected)
-        checks = self.preflight_all(total_bytes)
-        unavailable = [k for k, v in checks.items() if not v[0]]
-        if unavailable:
-            details = "; ".join(f"{k}: {checks[k][1]}" for k in unavailable)
-            raise BackupError(f"Required backup location unavailable. {details}")
 
-        b1 = Path(self.storage.get_setting("backup1_path")) / folder_name
-        b2 = Path(self.storage.get_setting("backup2_path")) / folder_name
-        for d in (b1, b2):
-            d.mkdir(parents=True, exist_ok=True)
+        total_bytes = sum(p.size for p in selected)
+        cache_ok, cache_msg, _ = self.preflight_safety_cache(total_bytes)
+        if not cache_ok:
+            raise BackupError(cache_msg)
 
         job_id = self._make_job_id(spec)
         created = datetime.now().isoformat()
-        dropbox_status = "pending" if (self.storage.get_setting("dropbox_app_key", "") and self.storage.get_setting("dropbox_refresh_token", "")) else "not_connected"
+        cache_folder = self._safety_cache_root() / folder_name / job_id
+        b1 = Path(str(self.storage.get_setting("backup1_path", "") or "")) / folder_name
+        b2 = Path(str(self.storage.get_setting("backup2_path", "") or "")) / folder_name
+        dropbox_status = "pending" if (
+            self.storage.get_setting("dropbox_app_key", "")
+            and self.storage.get_setting("dropbox_refresh_token", "")
+        ) else "not_connected"
+
         manifest: dict[str, Any] = {
-            "schema": 2,
+            "schema": 3,
             "job_id": job_id,
             "created_at": created,
+            "machine_id": self.machine_id,
             "source_path": spec.source_path,
             "folder_name": folder_name,
             "event": {
@@ -607,9 +610,18 @@ class BackupEngine:
             "excluded_count": len([p for p in photos if not p.selected]),
             "selected_files": [],
             "backups": {
+                "local_cache": {
+                    "path": str(cache_folder),
+                    "status": "pending",
+                    "retain_days": int(self.storage.get_setting("safety_cache_retention_days", 7) or 7),
+                },
                 "backup1": {"path": str(b1), "status": "pending"},
                 "backup2": {"path": str(b2), "status": "pending"},
-                "dropbox": {"path": f"{DROPBOX_DESTINATION}/{folder_name}", "status": dropbox_status, "uploaded": []},
+                "dropbox": {
+                    "path": f"{DROPBOX_DESTINATION}/{folder_name}",
+                    "status": dropbox_status,
+                    "uploaded": [],
+                },
                 "emergency": {"path": "", "status": "not_used"},
             },
             "status": "running",
@@ -618,77 +630,178 @@ class BackupEngine:
         }
         manifest_path = self.storage.save_manifest(job_id, manifest)
         self.storage.upsert_job(self._job_row(manifest, manifest_path))
+        self._log_stage(job_id, "job", "started", f"Import started on {self.machine_id}")
 
+        network_slot: Path | None = None
+        folder_locks: list[Path] = []
         bytes_done = 0
         start_time = time.monotonic()
+
         try:
-            # PRIMARY FIRST: SD -> Backup 1, hashing source while writing then re-hashing destination.
+            # 1) SD -> LOCAL FIXED-DISK SAFETY CACHE.
+            cache_folder.mkdir(parents=True, exist_ok=True)
+            self._log_stage(job_id, "local_cache", "started", str(cache_folder))
             for idx, photo in enumerate(selected, start=1):
                 src = Path(photo.path)
-                dest = b1 / photo.renamed
-                self._emit(progress, stage="primary", message=f"Primary backup: {photo.original_name}", current=idx-1, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=(bytes_done / max(0.001, time.monotonic()-start_time)))
+                dest = cache_folder / photo.renamed
+                self._emit(
+                    progress,
+                    stage="local_cache",
+                    message=f"Safety cache: {photo.original_name}",
+                    current=idx - 1,
+                    total=len(selected),
+                    bytes_done=bytes_done,
+                    bytes_total=total_bytes,
+                    rate_bps=(bytes_done / max(0.001, time.monotonic() - start_time)),
+                )
 
                 def add_bytes(n: int) -> None:
                     nonlocal bytes_done
                     bytes_done += n
-                    self._emit(progress, stage="primary", message=f"Primary backup: {photo.original_name}", current=idx-1, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=(bytes_done / max(0.001, time.monotonic()-start_time)))
+                    self._emit(
+                        progress,
+                        stage="local_cache",
+                        message=f"Safety cache: {photo.original_name}",
+                        current=idx - 1,
+                        total=len(selected),
+                        bytes_done=bytes_done,
+                        bytes_total=total_bytes,
+                        rate_bps=(bytes_done / max(0.001, time.monotonic() - start_time)),
+                    )
 
                 digest = self._copy_source_to_primary(src, dest, photo.size, add_bytes)
                 photo.sha256 = digest
                 manifest["selected_files"].append({
-                    "source": photo.path, "original_name": photo.original_name, "number": photo.number,
-                    "renamed": photo.renamed, "size": photo.size, "sha256": digest,
+                    "source": photo.path,
+                    "original_name": photo.original_name,
+                    "number": photo.number,
+                    "renamed": photo.renamed,
+                    "size": photo.size,
+                    "sha256": digest,
                 })
                 self.storage.save_manifest(job_id, manifest)
 
+            self._verify_folder_count(cache_folder, len(selected))
+            self._verify_manifest_files(cache_folder, manifest["selected_files"])
+            manifest["backups"]["local_cache"]["status"] = "verified"
+            manifest["backups"]["local_cache"]["verified_at"] = datetime.now().isoformat()
+            self._write_manifest_copy(cache_folder, manifest)
+            self.storage.save_manifest(job_id, manifest)
+            self.storage.upsert_job(self._job_row(manifest, manifest_path))
+            self._log_stage(job_id, "local_cache", "verified", f"{len(selected)} files SHA-256 verified")
+            self._emit(
+                progress,
+                stage="local_cache_ready",
+                message="LOCAL SAFETY COPY VERIFIED ✓ — originals are protected on this PC; network backups are next",
+                current=len(selected),
+                total=len(selected),
+                bytes_done=total_bytes,
+                bytes_total=total_bytes,
+                rate_bps=0,
+            )
+
+            # 2) Limit total network pressure across all TPS computers.
+            network_slot = self._acquire_network_slot(job_id, progress)
+
+            # 3) Once a network slot is available, check both destinations.
+            checks = self.preflight_all(total_bytes)
+            unavailable = [k for k, v in checks.items() if not v[0]]
+            if unavailable:
+                details = "; ".join(f"{k}: {checks[k][1]}" for k in unavailable)
+                raise BackupError(
+                    f"Network backup unavailable after local safety copy was secured. {details}. "
+                    "The SD card has NOT been deleted and the local safety cache is intact."
+                )
+
+            for folder in (b1, b2):
+                folder.mkdir(parents=True, exist_ok=True)
+                folder_locks.append(self._acquire_folder_lock(folder, job_id))
+
+            # 4) LOCAL CACHE -> BACKUP 1. Only one network destination is written at a time.
+            self._log_stage(job_id, "backup1", "started", str(b1))
+            for i, item in enumerate(manifest["selected_files"], start=1):
+                src = cache_folder / item["renamed"]
+                dest = b1 / item["renamed"]
+                self._copy_verified_file(src, dest, item["size"], item["sha256"])
+                self._emit(
+                    progress,
+                    stage="backup1",
+                    message=f"Backup 1: {item['renamed']}",
+                    current=i,
+                    total=len(selected),
+                    bytes_done=i,
+                    bytes_total=len(selected),
+                    rate_bps=0,
+                )
             self._verify_folder_count(b1, len(selected))
+            self._verify_manifest_files(b1, manifest["selected_files"])
             manifest["backups"]["backup1"]["status"] = "verified"
+            manifest["backups"]["backup1"]["verified_at"] = datetime.now().isoformat()
             self._write_manifest_copy(b1, manifest)
             self.storage.save_manifest(job_id, manifest)
             self.storage.upsert_job(self._job_row(manifest, manifest_path))
-            self._emit(progress, stage="primary_ready", message="Primary backup verified and ready", current=len(selected), total=len(selected), bytes_done=total_bytes, bytes_total=total_bytes, rate_bps=0)
+            self._log_stage(job_id, "backup1", "verified", f"{len(selected)} files SHA-256 verified")
 
-            # SECOND LOCAL COPY: verified Backup 1 -> Backup 2.
+            # 5) LOCAL CACHE -> BACKUP 2, sequentially.
+            self._log_stage(job_id, "backup2", "started", str(b2))
             for i, item in enumerate(manifest["selected_files"], start=1):
-                if self.cancel_event.is_set():
-                    raise BackupError("Backup cancelled")
-                if not b2.exists():
-                    raise BackupError("Connection lost to Backup 2")
-                src = b1 / item["renamed"]
+                src = cache_folder / item["renamed"]
                 dest = b2 / item["renamed"]
                 self._copy_verified_file(src, dest, item["size"], item["sha256"])
-                self._emit(progress, stage="backup2", message=f"Backup 2: {item['renamed']}", current=i, total=len(selected), bytes_done=i, bytes_total=len(selected), rate_bps=0)
+                self._emit(
+                    progress,
+                    stage="backup2",
+                    message=f"Backup 2: {item['renamed']}",
+                    current=i,
+                    total=len(selected),
+                    bytes_done=i,
+                    bytes_total=len(selected),
+                    rate_bps=0,
+                )
             self._verify_folder_count(b2, len(selected))
+            self._verify_manifest_files(b2, manifest["selected_files"])
             manifest["backups"]["backup2"]["status"] = "verified"
+            manifest["backups"]["backup2"]["verified_at"] = datetime.now().isoformat()
             self._write_manifest_copy(b2, manifest)
-
-            # Final local invariant. Dropbox is not part of the SD-card deletion gate.
-            for folder in (b1, b2):
-                self._verify_folder_count(folder, len(selected))
-            if not all(manifest["backups"][k]["status"] == "verified" for k in ("backup1", "backup2")):
-                raise BackupError("Final 2/2 local verification state is incomplete")
-
-            manifest["status"] = "verified_2_of_2_dropbox_pending"
             self.storage.save_manifest(job_id, manifest)
-            for folder in (b1, b2):
-                self._write_manifest_copy(folder, manifest)
             self.storage.upsert_job(self._job_row(manifest, manifest_path))
+            self._log_stage(job_id, "backup2", "verified", f"{len(selected)} files SHA-256 verified")
+
+            # 6) Verify all three exact copies one more time before presenting the delete option.
+            for key, folder in (("local_cache", cache_folder), ("backup1", b1), ("backup2", b2)):
+                self._verify_folder_count(folder, len(selected))
+                self._verify_manifest_files(folder, manifest["selected_files"])
+                if manifest["backups"][key]["status"] != "verified":
+                    raise BackupError(f"Final verification state is incomplete for {key}")
+
+            manifest["status"] = "verified_safety_plus_2_network_dropbox_pending"
+            manifest["pre_delete_verified_at"] = datetime.now().isoformat()
+            self.storage.save_manifest(job_id, manifest)
+            self._write_manifest_copy(cache_folder, manifest)
+            self._write_manifest_copy(b1, manifest)
+            self._write_manifest_copy(b2, manifest)
+            self.storage.upsert_job(self._job_row(manifest, manifest_path))
+            self._log_stage(job_id, "pre_delete_gate", "verified", "Local cache + Backup 1 + Backup 2 fully SHA-256 verified")
 
             payload = self._event_payload(manifest)
+            payload["machine_id"] = self.machine_id
+            payload["safety_cache_status"] = manifest["backups"]["local_cache"]["status"]
             self.eventlog.queue(job_id, payload)
             sent, _ = self.eventlog.try_send_job(job_id)
             manifest["eventlog_status"] = "sent" if sent else "queued"
-
-            # Normally UI asks for a final confirmation after the two local copies are safe.
-            if spec.delete_after_verified:
-                self.delete_verified_sources(manifest)
-                manifest["sd_deleted"] = True
-
             self.storage.save_manifest(job_id, manifest)
-            for folder in (b1, b2):
-                self._write_manifest_copy(folder, manifest)
             self.storage.upsert_job(self._job_row(manifest, manifest_path))
-            self._emit(progress, stage="complete", message="2/2 local backups verified byte-for-byte — Dropbox can continue in background", current=len(selected), total=len(selected), bytes_done=total_bytes, bytes_total=total_bytes, rate_bps=0)
+
+            self._emit(
+                progress,
+                stage="complete",
+                message="3 EXACT COPIES VERIFIED ✓ — local safety cache + Backup 1 + Backup 2",
+                current=len(selected),
+                total=len(selected),
+                bytes_done=total_bytes,
+                bytes_total=total_bytes,
+                rate_bps=0,
+            )
             return manifest
 
         except Exception as exc:
@@ -697,8 +810,22 @@ class BackupEngine:
             manifest["error"] = str(exc)
             self.storage.save_manifest(job_id, manifest)
             self.storage.upsert_job(self._job_row(manifest, manifest_path, str(exc)))
-            self._emit(progress, stage="error", message=str(exc), current=0, total=len(selected), bytes_done=bytes_done, bytes_total=total_bytes, rate_bps=0)
+            self._log_stage(job_id, "job", "error", str(exc))
+            self._emit(
+                progress,
+                stage="error",
+                message=str(exc),
+                current=0,
+                total=len(selected),
+                bytes_done=bytes_done,
+                bytes_total=total_bytes,
+                rate_bps=0,
+            )
             raise
+        finally:
+            for lock in reversed(folder_locks):
+                self._release_lock(lock)
+            self._release_lock(network_slot)
 
     def run_emergency(self, spec: BackupJobSpec, progress: Callable[[ProgressEvent], None] | None = None) -> dict[str, Any]:
         self.reset_cancel()
