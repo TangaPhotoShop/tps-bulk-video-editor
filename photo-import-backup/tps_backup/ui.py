@@ -400,7 +400,7 @@ class TPSApp(tk.Tk):
         head.grid(row=0, column=0, sticky="ew", padx=34, pady=(25, 14))
         ttk.Label(head, text="Import Event", style="Title.TLabel").pack(anchor="w")
         tk.Label(head, text=f"Version {APP_VERSION}", bg=BG, fg="#7D9299", font=("Segoe UI Semibold", 8)).pack(anchor="w", pady=(1, 0))
-        ttk.Label(head, text="Select the event, review the card, then create two exact local backups. Dropbox continues in the background.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
+        ttk.Label(head, text="Select the event, verify a local safety copy, then create two exact network backups. Dropbox continues in the background.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
 
         self.status_banner = tk.Frame(page, bg="#E7EEE9", highlightbackground="#C5D7CE", highlightthickness=1)
         self.status_banner.grid(row=1, column=0, sticky="ew", padx=34, pady=(0, 14))
@@ -589,7 +589,7 @@ class TPSApp(tk.Tk):
         ttk.Button(backup, text="Check network now", style="Secondary.TButton", command=self.check_network).grid(row=4, column=0, sticky="ew", padx=14, pady=(6, 7))
 
         self.delete_var = tk.BooleanVar(value=bool(self.storage.get_setting("delete_after_verified_default", False)))
-        ttk.Checkbutton(backup, text="Delete imported files from SD after 2/2 local verification", variable=self.delete_var).grid(row=5, column=0, sticky="w", padx=14, pady=(0, 5))
+        ttk.Checkbutton(backup, text="Delete imported files from SD after final 3-copy verification", variable=self.delete_var).grid(row=5, column=0, sticky="w", padx=14, pady=(0, 5))
 
         self.folder_preview = tk.Label(backup, text="Folder preview: —", bg=CARD, fg=MUTED, anchor="w", justify="left", font=("Consolas", 8))
         self.folder_preview.grid(row=6, column=0, sticky="ew", padx=14, pady=(0, 5))
@@ -1078,7 +1078,7 @@ class TPSApp(tk.Tk):
         if hasattr(self, "backup_status_labels"):
             if dropbox_ok:
                 self.backup_status_labels[3].configure(
-                    text="Connected ✓ • uploads after 2/2 local verification",
+                    text="Connected ✓ • uploads after safety cache + 2 network verifications",
                     fg=GREEN,
                 )
             elif self.dropbox.configured():
@@ -1530,7 +1530,7 @@ class TPSApp(tk.Tk):
         tk.Label(head, text=f"Version {APP_VERSION}", bg=BG, fg="#7D9299", font=("Segoe UI Semibold", 8)).pack(anchor="w", pady=(1, 0))
         ttk.Label(
             head,
-            text="Filter and sort verified local backups, Dropbox uploads, emergency jobs and Event Log sync status.",
+            text="Filter and sort verified safety/network backups, Dropbox uploads, emergency jobs and Event Log sync status.",
             style="Subtitle.TLabel",
         ).pack(anchor="w", pady=(3, 0))
 
@@ -1575,7 +1575,7 @@ class TPSApp(tk.Tk):
             width=20,
             values=[
                 "All statuses",
-                "2/2 local verified",
+                "Safety + 2 network verified",
                 "Dropbox verified",
                 "Dropbox pending",
                 "Emergency backup",
@@ -1604,7 +1604,7 @@ class TPSApp(tk.Tk):
             "event": ("Event", 180),
             "photographer": ("Photographer", 150),
             "photos": ("Photos", 80),
-            "status": ("Local backup", 190),
+            "status": ("Verified backups", 190),
             "dropbox": ("Dropbox", 125),
             "eventlog": ("Event Log", 120),
             "sd": ("SD cleared", 90),
@@ -1630,8 +1630,8 @@ class TPSApp(tk.Tk):
         local_ok = row.get("primary_status") == "verified" and row.get("backup2_status") == "verified"
         dropbox_ok = row.get("backup3_status") == "verified"
         status_text = str(row.get("status", "")).lower()
-        if selected == "2/2 local verified":
-            return local_ok
+        if selected == "Safety + 2 network verified":
+            return local_ok and "verified_safety" in status_text
         if selected == "Dropbox verified":
             return dropbox_ok
         if selected == "Dropbox pending":
@@ -1833,7 +1833,7 @@ class TPSApp(tk.Tk):
         head.grid(row=0, column=0, sticky="ew", padx=34, pady=(25, 14))
         ttk.Label(head, text="Admin", style="Title.TLabel").pack(anchor="w")
         tk.Label(head, text=f"Version {APP_VERSION}", bg=BG, fg="#7D9299", font=("Segoe UI Semibold", 8)).pack(anchor="w", pady=(1, 0))
-        ttk.Label(head, text="Locked local backup destinations, Dropbox cloud backup, emergency storage and system configuration.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
+        ttk.Label(head, text="Locked safety-cache and network backup settings, Dropbox cloud backup, emergency storage and system configuration.", style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
 
         canvas = tk.Canvas(page, bg=BG, highlightthickness=0)
         self.admin_canvas = canvas
@@ -2349,12 +2349,12 @@ class TPSApp(tk.Tk):
         self.dropbox_thread.start()
 
     def on_close(self):
-        # Never allow the application to close during the two required local copies.
+        # Never allow the application to close while the safety cache/network copies or final SD verification are running.
         if self.backup_in_progress:
             messagebox.showwarning(
                 "Local backup still running",
-                "Please wait until Backup 1 and Backup 2 have finished and verified before closing the application.\n\n"
-                "Dropbox uploads may be paused safely after local backup completion.",
+                "Please wait until the local safety cache, Backup 1 and Backup 2 have finished and verified before closing the application.\n\n"
+                "Dropbox uploads may be paused safely after the protected copies are complete.",
                 parent=self,
             )
             return
