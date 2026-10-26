@@ -207,7 +207,9 @@ class DropboxBackupClient:
         # Prefer the verified local safety cache so cloud upload does not add read
         # pressure to the shared network storage while other TPS PCs are importing.
         cache = backups.get("local_cache", {})
-        if cache.get("status") == "verified" and Path(cache.get("path", "")).exists():
+        has_safety_cache = cache.get("status") == "verified" and Path(cache.get("path", "")).exists()
+        protected_status = "verified_safety_plus_2_network" if has_safety_cache else "verified_2_of_2"
+        if has_safety_cache:
             source_folder = Path(cache.get("path", ""))
             cloud_source = "local_safety_cache"
         else:
@@ -233,7 +235,7 @@ class DropboxBackupClient:
                 cloud["status"] = "pending"
                 cloud["paused_at"] = datetime.now().isoformat()
                 cloud["pause_reason"] = "Application closed before Dropbox upload completed"
-                manifest["status"] = "verified_safety_plus_2_network_dropbox_pending"
+                manifest["status"] = f"{protected_status}_dropbox_pending"
                 self._save_cloud_state(manifest)
                 raise DropboxUploadPaused("Dropbox upload paused and queued for next launch")
 
@@ -270,13 +272,13 @@ class DropboxBackupClient:
                 cloud["status"] = "pending"
                 cloud["paused_at"] = datetime.now().isoformat()
                 cloud["pause_reason"] = "Application closed before Dropbox upload completed"
-                manifest["status"] = "verified_safety_plus_2_network_dropbox_pending"
+                manifest["status"] = f"{protected_status}_dropbox_pending"
                 self._save_cloud_state(manifest)
                 raise DropboxUploadPaused("Dropbox upload paused and queued for next launch")
 
         cloud["status"] = "verified"
         cloud["verified_at"] = datetime.now().isoformat()
-        manifest["status"] = "verified_safety_plus_2_network_dropbox_verified"
+        manifest["status"] = f"{protected_status}_dropbox_verified"
         self._save_cloud_state(manifest)
         return manifest
 
@@ -309,23 +311,29 @@ class DropboxBackupClient:
         manifest = self.storage.load_manifest(job_id)
         if not manifest:
             return
-        cloud = manifest.setdefault("backups", {}).setdefault("dropbox", {"path": "", "status": "pending", "uploaded": []})
+        backups = manifest.setdefault("backups", {})
+        cache = backups.get("local_cache", {})
+        protected_status = "verified_safety_plus_2_network" if cache.get("status") == "verified" else "verified_2_of_2"
+        cloud = backups.setdefault("dropbox", {"path": "", "status": "pending", "uploaded": []})
         if cloud.get("status") == "verified":
             return
         cloud["status"] = "pending"
         cloud["paused_at"] = datetime.now().isoformat()
         cloud["pause_reason"] = reason
-        manifest["status"] = "verified_safety_plus_2_network_dropbox_pending"
+        manifest["status"] = f"{protected_status}_dropbox_pending"
         self._save_cloud_state(manifest)
 
     def mark_error(self, job_id: str, error: str) -> None:
         manifest = self.storage.load_manifest(job_id)
         if not manifest:
             return
-        cloud = manifest.setdefault("backups", {}).setdefault("dropbox", {"path": "", "status": "pending", "uploaded": []})
+        backups = manifest.setdefault("backups", {})
+        cache = backups.get("local_cache", {})
+        protected_status = "verified_safety_plus_2_network" if cache.get("status") == "verified" else "verified_2_of_2"
+        cloud = backups.setdefault("dropbox", {"path": "", "status": "pending", "uploaded": []})
         cloud["status"] = "pending"
         cloud["last_error"] = error
-        manifest["status"] = "verified_safety_plus_2_network_dropbox_pending"
+        manifest["status"] = f"{protected_status}_dropbox_pending"
         self._save_cloud_state(manifest, error)
 
     def pending_jobs(self, limit: int = 100) -> list[str]:
