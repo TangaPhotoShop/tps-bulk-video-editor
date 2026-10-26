@@ -233,7 +233,7 @@ class DropboxBackupClient:
                 cloud["status"] = "pending"
                 cloud["paused_at"] = datetime.now().isoformat()
                 cloud["pause_reason"] = "Application closed before Dropbox upload completed"
-                manifest["status"] = "verified_2_of_2_dropbox_pending"
+                manifest["status"] = "verified_safety_plus_2_network_dropbox_pending"
                 self._save_cloud_state(manifest)
                 raise DropboxUploadPaused("Dropbox upload paused and queued for next launch")
 
@@ -270,13 +270,13 @@ class DropboxBackupClient:
                 cloud["status"] = "pending"
                 cloud["paused_at"] = datetime.now().isoformat()
                 cloud["pause_reason"] = "Application closed before Dropbox upload completed"
-                manifest["status"] = "verified_2_of_2_dropbox_pending"
+                manifest["status"] = "verified_safety_plus_2_network_dropbox_pending"
                 self._save_cloud_state(manifest)
                 raise DropboxUploadPaused("Dropbox upload paused and queued for next launch")
 
         cloud["status"] = "verified"
         cloud["verified_at"] = datetime.now().isoformat()
-        manifest["status"] = "verified_2_of_2_dropbox_verified"
+        manifest["status"] = "verified_safety_plus_2_network_dropbox_verified"
         self._save_cloud_state(manifest)
         return manifest
 
@@ -315,7 +315,7 @@ class DropboxBackupClient:
         cloud["status"] = "pending"
         cloud["paused_at"] = datetime.now().isoformat()
         cloud["pause_reason"] = reason
-        manifest["status"] = "verified_2_of_2_dropbox_pending"
+        manifest["status"] = "verified_safety_plus_2_network_dropbox_pending"
         self._save_cloud_state(manifest)
 
     def mark_error(self, job_id: str, error: str) -> None:
@@ -325,7 +325,7 @@ class DropboxBackupClient:
         cloud = manifest.setdefault("backups", {}).setdefault("dropbox", {"path": "", "status": "pending", "uploaded": []})
         cloud["status"] = "pending"
         cloud["last_error"] = error
-        manifest["status"] = "verified_2_of_2_dropbox_pending"
+        manifest["status"] = "verified_safety_plus_2_network_dropbox_pending"
         self._save_cloud_state(manifest, error)
 
     def pending_jobs(self, limit: int = 100) -> list[str]:
