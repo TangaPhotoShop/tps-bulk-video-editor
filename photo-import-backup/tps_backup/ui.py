@@ -1023,8 +1023,14 @@ class TPSApp(tk.Tk):
             self.eventlog_admin_status.configure(text="Checking…", fg=BLUE)
 
         def worker():
+            required = max(self.selected_bytes(), 1)
             try:
-                checks = self.engine.preflight_all(max(self.selected_bytes(), 1))
+                safety = self.engine.preflight_safety_cache(required)
+            except Exception as exc:
+                safety = (False, str(exc), 0)
+
+            try:
+                checks = self.engine.preflight_all(required)
             except Exception as exc:
                 checks = {
                     "backup1": (False, str(exc), 0),
@@ -1046,14 +1052,20 @@ class TPSApp(tk.Tk):
 
             self.msg_queue.put((
                 "startup_connections",
-                (checks, dropbox_ok, dropbox_msg, eventlog_ok, eventlog_msg),
+                (safety, checks, dropbox_ok, dropbox_msg, eventlog_ok, eventlog_msg),
             ))
 
         threading.Thread(target=worker, daemon=True, name="TPSStartupConnectionCheck").start()
 
     def apply_startup_connection_results(self, payload):
-        checks, dropbox_ok, dropbox_msg, eventlog_ok, eventlog_msg = payload
-        local_ok = True
+        safety, checks, dropbox_ok, dropbox_msg, eventlog_ok, eventlog_msg = payload
+        safety_ok, safety_msg, safety_free = safety
+        if hasattr(self, "safety_cache_status"):
+            self.safety_cache_status.configure(
+                text=(f"Safety cache ✓ • {human_bytes(safety_free)} free" if safety_ok else f"Safety cache issue • {safety_msg}"),
+                fg=(GREEN if safety_ok else RED),
+            )
+        local_ok = bool(safety_ok)
         for i, key in enumerate(("backup1", "backup2"), start=1):
             ok, msg, free = checks.get(key, (False, "Not available", 0))
             local_ok = local_ok and bool(ok)
@@ -1094,7 +1106,7 @@ class TPSApp(tk.Tk):
             if local_ok:
                 cloud_note = "Dropbox connected" if dropbox_ok else "Dropbox pending/not connected"
                 event_note = "Event Log connected" if eventlog_ok else "Event Log will retry"
-                self.set_banner(f"Connections checked ✓ — local backups ready • {cloud_note} • {event_note}. Insert an SD card.", GREEN)
+                self.set_banner(f"Connections checked ✓ — safety cache + network backups ready • {cloud_note} • {event_note}. Insert an SD card.", GREEN)
             else:
                 self.set_banner("Connection check found a local backup problem — Emergency Local Backup is available.", RED)
 
