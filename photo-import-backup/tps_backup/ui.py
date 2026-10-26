@@ -1842,8 +1842,9 @@ class TPSApp(tk.Tk):
         tk.Label(paths, text="BACKUP LOCATIONS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(14,8))
         self.admin_path_vars = {}
         for r, (key, label) in enumerate([
-            ("backup1_path", "Backup 1 — PRIMARY / priority"),
-            ("backup2_path", "Backup 2 — independent local/filesystem copy"),
+            ("safety_cache_path", "Local Safety Cache — fixed drive on THIS computer"),
+            ("backup1_path", "Backup 1 — shared/network copy"),
+            ("backup2_path", "Backup 2 — shared/network copy"),
             ("emergency_path", "Emergency local backup"),
         ], start=1):
             tk.Label(paths, text=label, bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=r, column=0, sticky="w", padx=16, pady=7)
@@ -1889,9 +1890,19 @@ class TPSApp(tk.Tk):
             wraplength=900,
             justify="left",
         ).grid(row=2, column=0, columnspan=3, sticky="w", padx=16, pady=(0,10))
+        self.admin_network_limit_var = tk.IntVar(value=2)
+        self.admin_cache_retention_var = tk.IntVar(value=7)
+        tk.Label(syscard, text="Max simultaneous network imports", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=3, column=0, sticky="w", padx=16, pady=7)
+        ttk.Spinbox(syscard, from_=1, to=6, textvariable=self.admin_network_limit_var, width=6, state="readonly").grid(row=3, column=1, sticky="w", padx=8, pady=7)
+        tk.Label(syscard, text="Default 2. Other PCs can finish their local safety copy while waiting for a network slot.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=650, justify="left").grid(row=3, column=2, sticky="w", padx=(8,16), pady=7)
+
+        tk.Label(syscard, text="Local safety cache retention", bg=CARD, fg=INK, font=("Segoe UI Semibold", 9)).grid(row=4, column=0, sticky="w", padx=16, pady=7)
+        ttk.Spinbox(syscard, from_=1, to=30, textvariable=self.admin_cache_retention_var, width=6, state="readonly").grid(row=4, column=1, sticky="w", padx=8, pady=7)
+        tk.Label(syscard, text="days minimum; cache is released only after Dropbox is also verified.", bg=CARD, fg=MUTED, font=("Segoe UI", 8)).grid(row=4, column=2, sticky="w", padx=(8,16), pady=7)
+
         self.admin_delete_default_var = tk.BooleanVar()
-        ttk.Checkbutton(syscard, text="Pre-select 'Delete imported SD files after 2 local backups are verified'", variable=self.admin_delete_default_var).grid(row=3, column=0, columnspan=3, sticky="w", padx=16, pady=(7,4))
-        tk.Label(syscard, text="Even when pre-selected, staff still receive a final confirmation. Dropbox and Event Log sync are not required before the SD card can be cleared.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=900, justify="left").grid(row=4, column=0, columnspan=3, sticky="w", padx=16, pady=(0,14))
+        ttk.Checkbutton(syscard, text="Pre-select 'Delete imported SD files after final 3-copy verification'", variable=self.admin_delete_default_var).grid(row=5, column=0, columnspan=3, sticky="w", padx=16, pady=(7,4))
+        tk.Label(syscard, text="Deletion is blocked unless the local safety cache, Backup 1 and Backup 2 are all SHA-256 verified again immediately before clearing the card.", bg=CARD, fg=MUTED, font=("Segoe UI", 8), wraplength=900, justify="left").grid(row=6, column=0, columnspan=3, sticky="w", padx=16, pady=(0,14))
 
         people = tk.Frame(inner, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         people.grid(row=3, column=0, sticky="ew", pady=(0, 12))
@@ -1954,6 +1965,10 @@ class TPSApp(tk.Tk):
         if hasattr(self, "admin_delete_default_var"):
             self.admin_delete_default_var.set(bool(self.storage.get_setting("delete_after_verified_default", False)))
             self.dropbox_app_key_var.set(self.storage.get_setting("dropbox_app_key", ""))
+        if hasattr(self, "admin_network_limit_var"):
+            self.admin_network_limit_var.set(int(self.storage.get_setting("network_concurrency_limit", 2) or 2))
+        if hasattr(self, "admin_cache_retention_var"):
+            self.admin_cache_retention_var.set(int(self.storage.get_setting("safety_cache_retention_days", 7) or 7))
             self.refresh_dropbox_admin_status()
             self.refresh_eventlog_admin_status()
             self.refresh_reference_sync_status()
@@ -2164,6 +2179,8 @@ class TPSApp(tk.Tk):
         for key, var in self.admin_path_vars.items():
             self.storage.set_setting(key, var.get().strip())
         self.storage.set_setting("dropbox_app_key", self.dropbox_app_key_var.get().strip())
+        self.storage.set_setting("network_concurrency_limit", max(1, min(6, int(self.admin_network_limit_var.get() or 2))))
+        self.storage.set_setting("safety_cache_retention_days", max(1, min(30, int(self.admin_cache_retention_var.get() or 7))))
         self.storage.set_setting("delete_after_verified_default", bool(self.admin_delete_default_var.get()))
         self.delete_var.set(bool(self.admin_delete_default_var.get()))
         self.load_reference_data()
