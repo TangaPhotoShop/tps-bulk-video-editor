@@ -6,12 +6,13 @@ import json
 import os
 import re
 import shutil
+import socket
 import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass, asdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Iterable, Any
 
@@ -153,6 +154,156 @@ class BackupEngine:
         self.storage = storage
         self.eventlog = EventLogClient(storage)
         self.cancel_event = threading.Event()
+        self.machine_id = (os.environ.get("COMPUTERNAME") or socket.gethostname() or "UNKNOWN-PC").strip()
+
+    def _log_stage(self, job_id: str, stage: str, status: str, message: str) -> None:
+        try:
+            self.storage.log_stage(
+                job_id=job_id,
+                machine_id=self.machine_id,
+                stage=stage,
+                status=status,
+                message=message,
+                ts=datetime.now().isoformat(),
+            )
+        except Exception:
+            pass
+
+    def _safety_cache_root(self) -> Path:
+        raw = str(self.storage.get_setting("safety_cache_path", "") or "").strip()
+        if not raw:
+            raw = str(Path.home() / "TPS PHOTO SAFETY CACHE")
+        return Path(raw)
+
+    def _is_fixed_local_storage(self, path: Path) -> bool:
+        raw = str(path)
+        if raw.startswith("\\\\"):
+            return False
+        if os.name != "nt":
+            return True
+        try:
+            import ctypes
+            drive = path.drive
+            if not drive:
+                return False
+            root = drive + "\\"
+            DRIVE_FIXED = 3
+            return int(ctypes.windll.kernel32.GetDriveTypeW(root)) == DRIVE_FIXED
+        except Exception:
+            return False
+
+    def preflight_safety_cache(self, required_bytes: int) -> tuple[bool, str, int]:
+        root = self._safety_cache_root()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            if not self._is_fixed_local_storage(root):
+                return False, "Safety cache must be on this computer's fixed local drive", 0
+            usage = shutil.disk_usage(root)
+            # Leave a modest reserve so Windows is not filled by a large card.
+            reserve = max(2 * 1024**3, required_bytes // 5)
+            if usage.free < required_bytes + reserve:
+                return False, f"Insufficient local safety-cache space ({usage.free:,} bytes free)", usage.free
+            test = root / f".tps_cache_test_{uuid.uuid4().hex}.tmp"
+            with test.open("wb") as handle:
+                handle.write(b"TPS")
+                handle.flush()
+                os.fsync(handle.fileno())
+            test.unlink()
+            return True, "Ready", usage.free
+        except Exception as exc:
+            return False, f"Safety cache unavailable: {exc}", 0
+
+    def _network_slot_dir(self) -> Path:
+        base = Path(str(self.storage.get_setting("backup1_path", "") or ""))
+        if not str(base):
+            raise BackupError("Backup 1 is not configured")
+        return base / ".TPS-IMPORT-SLOTS"
+
+    def _acquire_network_slot(
+        self,
+        job_id: str,
+        progress: Callable[[ProgressEvent], None] | None = None,
+    ) -> Path:
+        slot_dir = self._network_slot_dir()
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        limit = int(self.storage.get_setting("network_concurrency_limit", 2) or 2)
+        limit = max(1, min(6, limit))
+        stale_seconds = 6 * 60 * 60
+
+        while not self.cancel_event.is_set():
+            for i in range(1, limit + 1):
+                path = slot_dir / f"slot-{i}.lock"
+                try:
+                    fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                    payload = {
+                        "job_id": job_id,
+                        "machine_id": self.machine_id,
+                        "started_at": datetime.now().isoformat(),
+                    }
+                    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                        json.dump(payload, handle)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    self._log_stage(job_id, "network_slot", "acquired", f"Network slot {i}/{limit}")
+                    return path
+                except FileExistsError:
+                    try:
+                        if time.time() - path.stat().st_mtime > stale_seconds:
+                            path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    raise BackupError(f"Could not acquire shared network backup slot: {exc}") from exc
+
+            self._emit(
+                progress,
+                stage="waiting_network",
+                message=f"Local safety copy verified — waiting for a network slot (max {limit} simultaneous jobs)",
+                current=0,
+                total=0,
+                bytes_done=0,
+                bytes_total=0,
+                rate_bps=0,
+            )
+            time.sleep(2)
+
+        raise BackupError("Backup cancelled while waiting for network slot")
+
+    def _release_lock(self, path: Path | None) -> None:
+        if not path:
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    def _acquire_folder_lock(self, folder: Path, job_id: str) -> Path:
+        folder.mkdir(parents=True, exist_ok=True)
+        lock = folder / ".TPS-IMPORT-LOCK"
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                if time.time() - lock.stat().st_mtime > 6 * 60 * 60:
+                    lock.unlink(missing_ok=True)
+                    fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                else:
+                    detail = lock.read_text(encoding="utf-8", errors="replace")
+                    raise BackupError(f"Another TPS computer is already using this event folder: {folder}. {detail}")
+            except BackupError:
+                raise
+            except Exception as exc:
+                raise BackupError(f"Event folder is locked by another import: {folder}") from exc
+        payload = {
+            "job_id": job_id,
+            "machine_id": self.machine_id,
+            "locked_at": datetime.now().isoformat(),
+        }
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        return lock
 
     def cancel(self) -> None:
         self.cancel_event.set()
