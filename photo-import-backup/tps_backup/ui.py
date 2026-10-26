@@ -1004,7 +1004,7 @@ class TPSApp(tk.Tk):
             f"Issue / notes: {notes}\n\n"
             f"Photos selected: {len(selected)}\n"
             f"Photos excluded: {excluded}\n"
-            f"Delete imported SD files after verification: {'Yes — final confirmation will still be required' if self.delete_var.get() else 'No'}\n\n"
+            f"Delete imported SD files after final 3-copy SHA verification: {'Yes — final confirmation will still be required' if self.delete_var.get() else 'No'}\n\n"
             "Proceed with BACK UP & COMPLETE using these details?"
         )
         return messagebox.askyesno("Confirm BACK UP & COMPLETE", summary, parent=self, icon="question")
@@ -1189,7 +1189,7 @@ class TPSApp(tk.Tk):
                     if hasattr(self, "backup_status_labels"):
                         self.backup_status_labels[3].configure(text="Cloud backup verified ✓", fg=GREEN)
                     self.refresh_history()
-                    self.set_banner("2/2 LOCAL VERIFIED + DROPBOX VERIFIED ✓", GREEN)
+                    self.set_banner("SAFETY CACHE + 2 NETWORK BACKUPS + DROPBOX VERIFIED ✓", GREEN)
                     # If another completed job was queued while this one uploaded,
                     # pick it up automatically after the worker has fully exited.
                     self.after(500, self.start_pending_dropbox_sync)
@@ -1794,6 +1794,19 @@ class TPSApp(tk.Tk):
             except Exception as exc:
                 self.msg_queue.put(("eventlog_sync_error", str(exc)))
         threading.Thread(target=worker, daemon=True, name="TPSEventLogAutoSync").start()
+
+    def start_safety_cache_cleanup(self):
+        """Release only eligible old cache jobs; never touch incomplete/pending safety copies."""
+        if self.closing:
+            return
+
+        def worker():
+            try:
+                self.engine.cleanup_expired_safety_cache()
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True, name="TPSSafetyCacheCleanup").start()
 
     def admin_test_eventlog(self):
         if hasattr(self, "eventlog_admin_status"):
