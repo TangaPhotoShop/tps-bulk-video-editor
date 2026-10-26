@@ -961,40 +961,181 @@ class BackupEngine:
             self.storage.upsert_job(self._job_row(manifest, manifest_path, str(exc)))
             raise
 
-    def delete_verified_sources(self, manifest: dict[str, Any]) -> None:
-        """Final deletion gate. Dropbox is deliberately NOT required to clear the SD card."""
+    def delete_verified_sources(
+        self,
+        manifest: dict[str, Any],
+        progress: Callable[[ProgressEvent], None] | None = None,
+    ) -> None:
+        """Final SD deletion gate: re-hash all three exact copies before deleting anything."""
         files = manifest.get("selected_files", [])
         if not files:
             raise BackupError("SD deletion blocked: no verified files in manifest")
-        for key in ("backup1", "backup2"):
-            info = manifest.get("backups", {}).get(key, {})
-            if info.get("status") != "verified":
-                raise BackupError(f"SD deletion blocked: {key} is not verified")
-            folder = Path(info.get("path", ""))
-            if not folder.exists():
-                raise BackupError(f"SD deletion blocked: connection lost to {key}")
-            self._verify_folder_count(folder, len(files))
-            for item in files:
-                p = folder / item["renamed"]
-                if not p.exists() or p.stat().st_size != item["size"]:
-                    raise BackupError(f"SD deletion blocked: {key} file missing or wrong size: {item['renamed']}")
-        self._delete_selected_originals(manifest)
 
-    def _delete_selected_originals(self, manifest: dict[str, Any]) -> None:
-        # This method is called only after both required local backups have been verified.
-        for item in manifest["selected_files"]:
-            p = Path(item["source"])
-            if p.exists():
-                # Last source integrity check prevents deleting an altered/replaced card file.
+        job_id = manifest.get("job_id", "UNKNOWN")
+        backups = manifest.get("backups", {})
+        cache_info = backups.get("local_cache", {})
+        if cache_info.get("status") != "verified":
+            raise BackupError("SD deletion blocked: local safety cache is not verified")
+
+        cache_folder = Path(cache_info.get("path", ""))
+        if not cache_folder.exists():
+            raise BackupError("SD deletion blocked: local safety cache is missing")
+
+        network_slot: Path | None = None
+        folder_locks: list[Path] = []
+        try:
+            network_slot = self._acquire_network_slot(job_id, progress)
+
+            network_folders: list[tuple[str, Path]] = []
+            for key in ("backup1", "backup2"):
+                info = backups.get(key, {})
+                if info.get("status") != "verified":
+                    raise BackupError(f"SD deletion blocked: {key} is not verified")
+                folder = Path(info.get("path", ""))
+                if not folder.exists():
+                    raise BackupError(f"SD deletion blocked: connection lost to {key}")
+                network_folders.append((key, folder))
+                folder_locks.append(self._acquire_folder_lock(folder, job_id))
+
+            # Re-verify the local safety cache and both network destinations by full hash.
+            verify_targets = [("Local safety cache", cache_folder)] + [
+                ("Backup 1" if key == "backup1" else "Backup 2", folder)
+                for key, folder in network_folders
+            ]
+            total_checks = len(files) * len(verify_targets)
+            checked = 0
+            for label, folder in verify_targets:
+                self._verify_folder_count(folder, len(files))
+                for item in files:
+                    p = folder / item["renamed"]
+                    if not p.exists():
+                        raise BackupError(f"SD deletion blocked: {label} is missing {item['renamed']}")
+                    if p.stat().st_size != item["size"]:
+                        raise BackupError(f"SD deletion blocked: {label} size mismatch for {item['renamed']}")
+                    if sha256_file(p) != item["sha256"]:
+                        raise BackupError(f"SD deletion blocked: {label} SHA-256 mismatch for {item['renamed']}")
+                    checked += 1
+                    self._emit(
+                        progress,
+                        stage="final_verify",
+                        message=f"Final safety check: {label} • {item['renamed']}",
+                        current=checked,
+                        total=total_checks,
+                        bytes_done=checked,
+                        bytes_total=total_checks,
+                        rate_bps=0,
+                    )
+
+            # Verify every SD source still matches before the first delete occurs.
+            for item in files:
+                p = Path(item["source"])
+                if not p.exists():
+                    raise BackupError(f"SD deletion blocked: source file is missing before deletion: {p.name}")
                 if p.stat().st_size != item["size"] or sha256_file(p) != item["sha256"]:
                     raise BackupError(f"Source changed since backup; refusing to delete {p.name}")
-        for item in manifest["selected_files"]:
-            p = Path(item["source"])
-            if p.exists():
-                p.unlink()
-        remaining = [Path(item["source"]) for item in manifest["selected_files"] if Path(item["source"]).exists()]
-        if remaining:
-            raise BackupError(f"Could not delete {len(remaining)} imported source files")
+
+            manifest["final_delete_gate_verified_at"] = datetime.now().isoformat()
+            manifest["sd_delete_state"] = "verified_ready_to_delete"
+            self.storage.save_manifest(job_id, manifest)
+            self._write_manifest_copy(cache_folder, manifest)
+            for _, folder in network_folders:
+                self._write_manifest_copy(folder, manifest)
+            self._log_stage(
+                job_id,
+                "sd_delete_gate",
+                "verified",
+                "Local safety cache + Backup 1 + Backup 2 + SD originals all SHA-256 verified",
+            )
+
+            # Deletion is not filesystem-transactional, so persist progress after every file.
+            # If Windows/card hardware fails midway, every deleted original already has 3 verified copies.
+            manifest["sd_delete_state"] = "deleting"
+            manifest["sd_deleted_files"] = []
+            self.storage.save_manifest(job_id, manifest)
+            for index, item in enumerate(files, start=1):
+                p = Path(item["source"])
+                if p.exists():
+                    p.unlink()
+                if p.exists():
+                    raise BackupError(f"Could not delete source file: {p.name}")
+                manifest["sd_deleted_files"].append(item["renamed"])
+                self.storage.save_manifest(job_id, manifest)
+                self._emit(
+                    progress,
+                    stage="sd_delete",
+                    message=f"Clearing verified SD original: {item['original_name']}",
+                    current=index,
+                    total=len(files),
+                    bytes_done=index,
+                    bytes_total=len(files),
+                    rate_bps=0,
+                )
+
+            remaining = [Path(item["source"]) for item in files if Path(item["source"]).exists()]
+            if remaining:
+                raise BackupError(f"Could not delete {len(remaining)} imported source files")
+
+            manifest["sd_delete_state"] = "deleted"
+            manifest["sd_deleted"] = True
+            manifest["sd_deleted_at"] = datetime.now().isoformat()
+            self.storage.save_manifest(job_id, manifest)
+            self._log_stage(job_id, "sd_delete", "complete", f"{len(files)} SD originals deleted after three-copy verification")
+        except Exception as exc:
+            manifest["sd_delete_error"] = str(exc)
+            manifest["sd_delete_state"] = manifest.get("sd_delete_state", "blocked")
+            try:
+                self.storage.save_manifest(job_id, manifest)
+            except Exception:
+                pass
+            self._log_stage(job_id, "sd_delete", "error", str(exc))
+            raise
+        finally:
+            for lock in reversed(folder_locks):
+                self._release_lock(lock)
+            self._release_lock(network_slot)
+
+    def cleanup_expired_safety_cache(self) -> int:
+        """Release only old caches whose SD originals were cleared and Dropbox is verified."""
+        removed = 0
+        now = datetime.now()
+        for row in self.storage.list_jobs(limit=2000):
+            if not row.get("sd_deleted"):
+                continue
+            if row.get("primary_status") != "verified" or row.get("backup2_status") != "verified":
+                continue
+            if row.get("backup3_status") != "verified":
+                continue
+            manifest = self.storage.load_manifest(row["id"])
+            if not manifest:
+                continue
+            cache = manifest.get("backups", {}).get("local_cache", {})
+            if cache.get("status") != "verified":
+                continue
+            try:
+                created = datetime.fromisoformat(manifest.get("created_at", row.get("created_at", "")))
+            except Exception:
+                continue
+            retain_days = int(cache.get("retain_days", self.storage.get_setting("safety_cache_retention_days", 7)) or 7)
+            if now - created < timedelta(days=max(1, retain_days)):
+                continue
+            folder = Path(cache.get("path", ""))
+            try:
+                if folder.exists():
+                    shutil.rmtree(folder)
+                cache["status"] = "released_after_retention"
+                cache["released_at"] = datetime.now().isoformat()
+                self.storage.save_manifest(row["id"], manifest)
+                self._log_stage(row["id"], "local_cache", "released", f"Released after {retain_days} day retention and verified Dropbox")
+                removed += 1
+                parent = folder.parent
+                try:
+                    if parent.exists() and not any(parent.iterdir()):
+                        parent.rmdir()
+                except Exception:
+                    pass
+            except Exception as exc:
+                self._log_stage(row["id"], "local_cache", "cleanup_error", str(exc))
+        return removed
 
     def _event_payload(self, manifest: dict[str, Any]) -> dict[str, Any]:
         e = manifest["event"]
