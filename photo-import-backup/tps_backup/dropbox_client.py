@@ -202,10 +202,19 @@ class DropboxBackupClient:
         b1 = backups.get("backup1", {})
         b2 = backups.get("backup2", {})
         if b1.get("status") != "verified" or b2.get("status") != "verified":
-            raise DropboxBackupError("Dropbox upload requires both local backups to be verified first")
-        source_folder = Path(b1.get("path", ""))
+            raise DropboxBackupError("Dropbox upload requires both network backups to be verified first")
+
+        # Prefer the verified local safety cache so cloud upload does not add read
+        # pressure to the shared network storage while other TPS PCs are importing.
+        cache = backups.get("local_cache", {})
+        if cache.get("status") == "verified" and Path(cache.get("path", "")).exists():
+            source_folder = Path(cache.get("path", ""))
+            cloud_source = "local_safety_cache"
+        else:
+            source_folder = Path(b1.get("path", ""))
+            cloud_source = "backup1_fallback"
         if not source_folder.exists():
-            raise DropboxBackupError("Primary verified backup is no longer reachable")
+            raise DropboxBackupError("No verified source is reachable for Dropbox upload")
 
         dbx, _ = self._client()
         remote_folder = f"{DROPBOX_DESTINATION}/{manifest['folder_name']}"
@@ -213,6 +222,7 @@ class DropboxBackupClient:
         cloud = backups.setdefault("dropbox", {"path": remote_folder, "status": "pending", "uploaded": []})
         cloud["path"] = remote_folder
         cloud["status"] = "uploading"
+        cloud["source"] = cloud_source
         uploaded = set(cloud.get("uploaded", []))
         self._save_cloud_state(manifest)
 
