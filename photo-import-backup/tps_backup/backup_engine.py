@@ -214,10 +214,10 @@ class BackupEngine:
             return False, f"Safety cache unavailable: {exc}", 0
 
     def _network_slot_dir(self) -> Path:
-        base = Path(str(self.storage.get_setting("backup1_path", "") or ""))
-        if not str(base):
+        raw = str(self.storage.get_setting("backup1_path", "") or "").strip()
+        if not raw:
             raise BackupError("Backup 1 is not configured")
-        return base / ".TPS-IMPORT-SLOTS"
+        return Path(raw) / ".TPS-IMPORT-SLOTS"
 
     def _acquire_network_slot(
         self,
@@ -341,6 +341,18 @@ class BackupEngine:
             "backup2": self.storage.get_setting("backup2_path", ""),
         }
         results = {k: self.preflight_path(v, required_bytes) for k, v in raw.items()}
+
+        # Backup 1 and Backup 2 must never be the exact same folder.
+        try:
+            p1 = os.path.normcase(os.path.abspath(raw["backup1"])) if raw["backup1"] else ""
+            p2 = os.path.normcase(os.path.abspath(raw["backup2"])) if raw["backup2"] else ""
+            if p1 and p2 and p1 == p2:
+                msg = "Backup 1 and Backup 2 cannot be the same folder"
+                results["backup1"] = (False, msg, results["backup1"][2])
+                results["backup2"] = (False, msg, results["backup2"][2])
+        except Exception:
+            pass
+
         # If both configured folders are on the same visible volume/share, ensure the
         # shared free space can hold both copies. Separate physical storage is still recommended.
         groups: dict[str, list[str]] = {}
