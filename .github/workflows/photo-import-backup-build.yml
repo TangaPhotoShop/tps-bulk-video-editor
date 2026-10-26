@@ -182,6 +182,7 @@ jobs:
           python -c "from tps_backup.backup_engine import BackupEngine, BackupJobSpec, SourcePhoto, safe_time_code; from tps_backup.storage import Storage; assert safe_time_code('L12','DOL')=='L12'; assert safe_time_code('L34','DOL')=='L34'; assert safe_time_code('L56','DOL')=='L56'; s=BackupJobSpec('2026-09-20','Steve','SW','Dolphin Feed','DOL','L12',None,'No issues','',r'C:\\DCIM',[SourcePhoto(r'C:\\DCIM\\IMG_0123.JPG','IMG_0123.JPG','0123',True,123)]); folder,photos=BackupEngine(Storage())._build_names(s); assert folder=='20-SEP-2026-DOL-L12-SW'; assert photos[0].renamed=='20-SEP-2026-DOL-L12-SW-0123.JPG'; print('Dolphin group filename test OK')"
           python -c "import compileall; assert compileall.compile_dir('.', quiet=1); from tps_backup.ui import TPSApp; assert hasattr(TPSApp,'on_close'); print('FINAL SOURCE VALIDATION OK')"
           python -c "from PIL import Image; im=Image.open('assets/tps_photo_backup.ico'); expected={(16,16),(20,20),(24,24),(32,32),(40,40),(48,48),(64,64),(128,128),(256,256)}; assert expected.issubset(set(im.info.get('sizes',[]))); print('SD TPS icon frames verified')"
+          python safety_smoke_test.py
 
       - name: Build standalone EXE with explicit TPS package inclusion
         shell: pwsh
@@ -241,10 +242,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TPS-Photo-Import-Backup-Windows-v1.3.0
+          name: TPS-Photo-Import-Backup-Windows-v1.4.0
           path: |
             photo-import-backup/dist/TPS Photo Import & Backup.exe
-            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.3.0.exe
+            photo-import-backup/dist/TPS.Photo.Import.Backup.Setup.v1.4.0.exe
           if-no-files-found: error
 
-# v1.3.0 Dolphin Feed L12 L34 L56 group selection and filename code
+# v1.4.0 multi-computer safety cache + throttled network + three-copy deletion gate
