@@ -1388,61 +1388,129 @@ class TPSApp(tk.Tk):
         self.set_busy(False)
         if emergency:
             self.progress["value"] = 100
-            self.set_banner("Emergency backup verified — the normal 2 local backups are still pending. DO NOT clear the SD card.", ORANGE)
-            messagebox.showinfo("Emergency backup complete", f"{len(manifest['selected_files'])} photos were copied and verified to emergency storage.\n\nThe two normal local backups are still required.\nThe SD card has NOT been deleted.", parent=self)
+            self.set_banner("Emergency backup verified — the normal 2 network backups are still pending. DO NOT clear the SD card.", ORANGE)
+            messagebox.showinfo(
+                "Emergency backup complete",
+                f"{len(manifest['selected_files'])} photos were copied and verified to emergency storage.\n\n"
+                "The two normal network backups are still required.\nThe SD card has NOT been deleted.",
+                parent=self,
+            )
             return
 
         self.progress["value"] = 100
         selected_n = len(manifest["selected_files"])
         excluded_n = manifest["excluded_count"]
-        if self.dropbox.configured():
-            self.set_banner("2/2 LOCAL VERIFIED — safe to remove/clear the SD card. Dropbox is uploading in the background.", GREEN)
-            self.start_dropbox_for_job(manifest["job_id"])
-        else:
-            self.set_banner("2/2 LOCAL VERIFIED — safe to remove/clear the SD card. Dropbox is not connected yet.", GREEN)
+        self.set_banner(
+            "3 EXACT COPIES VERIFIED ✓ — local safety cache + Backup 1 + Backup 2. Final re-check required before SD deletion.",
+            GREEN,
+        )
 
         if self.delete_var.get():
             yes = messagebox.askyesno(
-                "Safe to clear imported files",
-                f"All {selected_n} selected JPEGs are byte-for-byte verified in BOTH local backup locations.\n\n"
-                f"Delete ONLY those {selected_n} imported JPEGs from the SD card now?\n"
-                f"{excluded_n} excluded file(s) will remain untouched.\n\n"
-                "Dropbox continues independently from Backup 1 and does not require the SD card.",
+                "Final safety check before clearing SD card",
+                f"{selected_n} selected JPEGs currently have THREE exact verified copies:\n\n"
+                "• Local safety cache on this computer\n"
+                "• Backup 1\n"
+                "• Backup 2\n\n"
+                "If you continue, the program will SHA-256 re-read EVERY file in all three copies "
+                "again before deleting the first SD-card original.\n\n"
+                f"Delete ONLY those {selected_n} imported JPEGs after that final verification?\n"
+                f"{excluded_n} excluded file(s) will remain untouched.",
                 parent=self,
+                icon="question",
             )
             if yes:
-                try:
-                    self.engine.delete_verified_sources(manifest)
-                    manifest["sd_deleted"] = True
-                    self.storage.save_manifest(manifest["job_id"], manifest)
-                    row = self.storage.get_job(manifest["job_id"])
-                    if row:
-                        row["sd_deleted"] = 1
-                        row["updated_at"] = __import__("datetime").datetime.now().isoformat()
-                        self.storage.upsert_job(row)
-                    source_root = manifest.get("source_path", self.source_var.get().strip())
-                    ejected, eject_message = windows_eject_removable_drive(source_root)
-                    if ejected:
-                        # No second success dialog: the user already confirmed deletion.
-                        # Reset immediately so the next photographer starts from a clean form.
-                        self.reset_import_screen("IMPORT COMPLETE ✓ — SD card cleared and ejected. Ready for the next card.")
-                        self.after(250, self.auto_check_connections_on_load)
-                    else:
-                        self.reset_import_screen("IMPORT COMPLETE ✓ — remove the SD card manually when ready.")
-                        self.after(250, self.auto_check_connections_on_load)
-                        messagebox.showwarning(
-                            "Remove SD card manually",
-                            f"The imported JPEGs were deleted successfully, but Windows could not automatically eject the card:\n\n"
-                            f"{eject_message}\n\n"
-                            "The system has already reset for the next event. Remove this card manually before inserting another.",
-                            parent=self,
-                        )
-                except Exception as exc:
-                    messagebox.showerror("Could not clear SD card", f"The local backups remain safe, but the source files were NOT fully deleted.\n\n{exc}", parent=self)
-                    return
+                self.set_busy(True)
+                self.progress["value"] = 0
+                self.progress_text.configure(text="Starting final three-copy verification…")
+
+                def progress_cb(ev: ProgressEvent):
+                    self.msg_queue.put(("progress", ev))
+
+                def worker():
+                    windows_keep_awake(True)
+                    try:
+                        self.engine.delete_verified_sources(manifest, progress_cb)
+                        self.msg_queue.put(("sd_delete_done", manifest))
+                    except Exception as exc:
+                        self.msg_queue.put(("sd_delete_error", (manifest, str(exc))))
+                    finally:
+                        windows_keep_awake(False)
+
+                threading.Thread(target=worker, daemon=True, name="TPSSafeSDDelete").start()
+                return
+
+        # SD retained, or staff declined deletion. Cloud upload can start from the
+        # verified local safety cache without adding read traffic to Backup 1.
+        if self.dropbox.configured():
+            self.start_dropbox_for_job(manifest["job_id"])
+            cloud_note = "Dropbox upload has started from the local safety cache."
         else:
-            cloud_note = "Dropbox upload has started in the background." if self.dropbox.configured() else "Dropbox is not connected; the cloud copy will remain pending until it is configured."
-            messagebox.showinfo("Local backup complete", f"{selected_n} photos verified in 2/2 local locations.\n{excluded_n} excluded file(s) were not imported.\n\nThe SD card originals were retained.\n{cloud_note}", parent=self)
+            cloud_note = "Dropbox is not connected; the cloud copy remains queued."
+
+        messagebox.showinfo(
+            "Backup complete — SD retained",
+            f"{selected_n} photos are verified in the local safety cache, Backup 1 and Backup 2.\n"
+            f"{excluded_n} excluded file(s) were not imported.\n\n"
+            f"The SD card originals were retained.\n{cloud_note}",
+            parent=self,
+        )
+
+    def handle_sd_delete_done(self, manifest: dict):
+        self.set_busy(False)
+        job_id = manifest["job_id"]
+        row = self.storage.get_job(job_id)
+        if row:
+            row["sd_deleted"] = 1
+            row["updated_at"] = __import__("datetime").datetime.now().isoformat()
+            row["error_message"] = None
+            self.storage.upsert_job(row)
+
+        if self.dropbox.configured():
+            self.start_dropbox_for_job(job_id)
+
+        source_root = manifest.get("source_path", self.source_var.get().strip())
+        ejected, eject_message = windows_eject_removable_drive(source_root)
+        if ejected:
+            self.reset_import_screen("IMPORT COMPLETE ✓ — 3 copies verified, SD cleared and ejected. Ready for the next card.")
+            self.after(250, self.auto_check_connections_on_load)
+        else:
+            self.reset_import_screen("IMPORT COMPLETE ✓ — 3 copies verified. Remove the SD card manually.")
+            self.after(250, self.auto_check_connections_on_load)
+            messagebox.showwarning(
+                "Remove SD card manually",
+                "The imported files were cleared only after the final three-copy SHA-256 verification, "
+                "but Windows could not automatically eject the card:\n\n"
+                f"{eject_message}\n\n"
+                "The system has reset for the next event. Remove this card manually before inserting another.",
+                parent=self,
+            )
+
+    def handle_sd_delete_error(self, manifest: dict, err: str):
+        self.set_busy(False)
+        job_id = manifest.get("job_id", "")
+        # Cloud remains safe to start from the verified local cache even when SD
+        # deletion was blocked or interrupted.
+        if job_id and self.dropbox.configured():
+            self.start_dropbox_for_job(job_id)
+
+        deleted_count = len(manifest.get("sd_deleted_files", []))
+        if deleted_count:
+            detail = (
+                f"SD deletion stopped after {deleted_count} imported file(s) had been removed. "
+                "Before deletion began, every one of those files had been SHA-256 verified in the "
+                "local safety cache, Backup 1 and Backup 2."
+            )
+        else:
+            detail = "No SD-card originals were deleted because the final safety gate did not complete."
+
+        self.set_banner("SD CLEARING STOPPED — keep the card inserted and review the message.", RED)
+        messagebox.showerror(
+            "SD clearing stopped safely",
+            f"{detail}\n\n{err}\n\n"
+            "Do not format or reuse this card until the job has been reviewed.",
+            parent=self,
+        )
 
     def set_banner(self, text: str, color: str):
         bg = "#E7EEE9" if color == GREEN else "#F4EBDD" if color == ORANGE else "#F3E3E3" if color == RED else "#E3ECF0"
