@@ -248,6 +248,7 @@ class TPSApp(tk.Tk):
         self.after(1350, self.auto_sync_reference_data)
         self.after(1800, self.start_pending_dropbox_sync)
         self.after(2600, self.auto_sync_eventlog_queue)
+        self.after(5000, self.start_safety_cache_cleanup)
 
     def _style(self):
         style = ttk.Style(self)
@@ -569,7 +570,11 @@ class TPSApp(tk.Tk):
         backup = tk.Frame(right, bg=CARD, highlightbackground=LINE, highlightthickness=1)
         backup.grid(row=1, column=0, sticky="ew")
         backup.grid_columnconfigure(0, weight=1)
-        tk.Label(backup, text="BACKUP READINESS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).grid(row=0, column=0, sticky="w", padx=14, pady=(9, 5))
+        readiness_header = tk.Frame(backup, bg=CARD)
+        readiness_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(9, 5))
+        tk.Label(readiness_header, text="BACKUP READINESS", bg=CARD, fg=GOLD, font=("Segoe UI Semibold", 9)).pack(side="left")
+        self.safety_cache_status = tk.Label(readiness_header, text="Safety cache • checking…", bg=CARD, fg=MUTED, font=("Segoe UI", 8))
+        self.safety_cache_status.pack(side="right")
         self.backup_status_labels = {}
         self.backup_name_labels = {}
         for i, label in enumerate(("Backup 1", "Backup 2", "Dropbox"), start=1):
@@ -933,25 +938,8 @@ class TPSApp(tk.Tk):
         return sum(p.size for p in getattr(self, "photos", []) if p.selected)
 
     def check_network(self):
-        self.refresh_backup_destination_labels()
-        total = self.selected_bytes()
-        if total <= 0:
-            total = 1
-        self.set_banner("Checking both required backup locations…", BLUE)
-        checks = self.engine.preflight_all(total)
-        all_ok = True
-        for i, key in enumerate(("backup1", "backup2"), start=1):
-            ok, msg, free = checks[key]
-            all_ok &= ok
-            self.backup_status_labels[i].configure(text=(f"Ready • {human_bytes(free)} free" if ok else msg), fg=(GREEN if ok else RED))
-        cloud_text = self.dropbox.connection_label()
-        self.backup_status_labels[3].configure(text=(cloud_text + " • uploads after 2/2 local verification"), fg=(GREEN if self.dropbox.configured() else ORANGE))
-        self.emergency_btn.state(["disabled"] if all_ok else ["!disabled"])
-        if all_ok:
-            self.set_banner("Both local backup locations are connected and writable. Dropbox will not delay card release.", GREEN)
-        else:
-            self.set_banner("Required backup location unavailable — SD files are protected. Emergency local backup is available.", RED)
-        return all_ok
+        """Run connection checks in the background so a stalled network share cannot freeze the UI."""
+        self.auto_check_connections_on_load()
 
     def validate_event_form(self) -> str | None:
         if not getattr(self, "photos", None):
@@ -1121,9 +1109,8 @@ class TPSApp(tk.Tk):
         else:
             if not self.confirm_backup_details():
                 return
-            if not self.check_network():
-                messagebox.showerror("Network backup unavailable", "At least one required local/filesystem backup location is unavailable.\n\nUse Emergency Local Backup instead. The SD card will not be deleted.", parent=self)
-                return
+            # The worker now creates and verifies the local safety cache first,
+            # then checks/queues for shared network storage without blocking the UI.
 
         spec = self.build_spec()
         self.set_busy(True)
@@ -1152,7 +1139,7 @@ class TPSApp(tk.Tk):
             self.emergency_btn.state(["disabled"])
         else:
             self.backup_btn.state(["!disabled"])
-            self.check_network()
+            self.after(150, self.auto_check_connections_on_load)
 
     def poll_queue(self):
         try:
