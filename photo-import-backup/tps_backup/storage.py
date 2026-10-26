@@ -27,6 +27,9 @@ MANIFEST_DIR.mkdir(parents=True, exist_ok=True)
 DEFAULT_SETTINGS: dict[str, Any] = {
     "backup1_path": "",
     "backup2_path": "",
+    "safety_cache_path": str(Path.home() / "TPS PHOTO SAFETY CACHE"),
+    "safety_cache_retention_days": 7,
+    "network_concurrency_limit": 2,
     "emergency_path": str(Path.home() / "TPS Emergency Photo Backup"),
     "eventlog_url": "https://tps-event-log-import-api-production.up.railway.app/api/photo-import",
     "eventlog_api_key": "gkq-yDOoj8rao_HLsN4cPovcMBJXKb5aRpM-l8s5eSc",
@@ -128,6 +131,17 @@ class Storage:
                     last_error TEXT,
                     updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS job_stage_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    ts TEXT NOT NULL,
+                    machine_id TEXT NOT NULL,
+                    stage TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    message TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS job_stage_log_job_idx
+                ON job_stage_log(job_id, id);
                 """
             )
 
@@ -194,6 +208,29 @@ class Storage:
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def log_stage(
+        self,
+        job_id: str,
+        machine_id: str,
+        stage: str,
+        status: str,
+        message: str,
+        ts: str,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO job_stage_log(job_id, ts, machine_id, stage, status, message) VALUES(?,?,?,?,?,?)",
+                (job_id, ts, machine_id, stage, status, message),
+            )
+
+    def get_stage_log(self, job_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM job_stage_log WHERE job_id=? ORDER BY id",
+                (job_id,),
             ).fetchall()
         return [dict(r) for r in rows]
 
