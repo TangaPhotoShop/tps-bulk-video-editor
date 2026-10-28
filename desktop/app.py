@@ -20,7 +20,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.18"
+APP_VERSION = "1.3.19"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 DOLPHIN_NAMES = ("Echo", "Rani", "Calypso", "Comet", "Betts", "Zephyr", "Luna", "Storm", "Generic")
 TRANSITION_SECONDS = 0.5
@@ -1077,7 +1077,7 @@ Intro OFF | Outro OFF | Dolphin Generic | Auto Exposure OFF | Auto White Balance
             inputs += ["-i", str(self.intro_outro_asset(sequence["dolphin"], "Intro"))]
             graph += [
                 f"[{next_input}:v]{common_video}[introv]",
-                f"[{next_input}:a]aresample=48000,asetpts=PTS-STARTPTS[introa]",
+                f"[{next_input}:a]aresample=48000,loudnorm=I=-16:TP=-2:LRA=7,asetpts=PTS-STARTPTS[introa]",
             ]
             intro_index = next_input
             next_input += 1
@@ -1085,7 +1085,7 @@ Intro OFF | Outro OFF | Dolphin Generic | Auto Exposure OFF | Auto White Balance
             inputs += ["-i", str(self.intro_outro_asset(sequence["dolphin"], "Outro"))]
             graph += [
                 f"[{next_input}:v]{common_video}[outrov]",
-                f"[{next_input}:a]aresample=48000,asetpts=PTS-STARTPTS[outroa]",
+                f"[{next_input}:a]aresample=48000,loudnorm=I=-16:TP=-2:LRA=7,asetpts=PTS-STARTPTS[outroa]",
             ]
         fade = TRANSITION_SECONDS
         blend = f"blend=all_expr='A*(1-T/{fade})+B*(T/{fade})':shortest=1"

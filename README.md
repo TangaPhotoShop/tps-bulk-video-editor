@@ -1,6 +1,6 @@
 # TPS Bulk Video Editor
 
-Current Windows release: **Version 1.3.18**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
+Current Windows release: **Version 1.3.19**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
 
 Windows desktop software for Tangalooma Photo Shop. It reads tour videos directly from an SD card or local folder, applies bulk video/audio adjustments, overlays the TPS logo, renames clips and writes MP4 files into a newly created output folder. Original source files are never changed.
 
@@ -36,6 +36,8 @@ Version 1.3.16 adds a low-resolution watermarked-only export mode that skips the
 Version 1.3.17 adds optional named-dolphin intros and outros. Staff can assign Echo, Rani, Calypso, Comet, Betts, Zephyr, Luna, Storm or Generic to one or more imported videos, independently enable the intro and outro, and blend both joins with a 0.5-second video crossfade and matching audio crossfade. The assignment is recorded in the export summary and is used for both full- and low-resolution outputs.
 
 Version 1.3.18 prevents the file table from squeezing the controls on smaller or display-scaled screens. The right panel now has a reserved width and vertical scrollbar. Dolphin name, photographer initials, date and starting number use clearly labelled full-width rows.
+
+Version 1.3.19 normalizes the quiet supplied intro/outro music to an audible, protected level before joining it to the guest footage. The guest-footage Volume control remains separate and does not alter the prepared intro/outro music.
 
 ## Low-resolution upload copies
 
