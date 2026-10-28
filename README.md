@@ -1,6 +1,6 @@
 # TPS Bulk Video Editor
 
-Current Windows release: **Version 1.3.16**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
+Current Windows release: **Version 1.3.17**. The installed version is displayed in the application title bar and main header, and every installer filename includes its version.
 
 Windows desktop software for Tangalooma Photo Shop. It reads tour videos directly from an SD card or local folder, applies bulk video/audio adjustments, overlays the TPS logo, renames clips and writes MP4 files into a newly created output folder. Original source files are never changed.
 
@@ -32,6 +32,8 @@ Version 1.3.14 displays the original, full-resolution and low-resolution file si
 Version 1.3.15 keeps batch cancellation permanently visible: the main Create Edited Videos button becomes a red Cancel Batch Export button while processing. Cancellation requires confirmation, preserves completed outputs, removes the incomplete current file and then restores the editor for adjustment and restart.
 
 Version 1.3.16 adds a low-resolution watermarked-only export mode that skips the full-resolution batch. It replaces free-form filenames with validated Date, fixed DOL activity, Photographer Initials and Starting Number controls, generating locked sequential names such as `15-SEP-2026-DOL-SW-0001.MP4`. The high- and low-resolution destination controls are editable drop-downs that suggest the standard TPS Z: drive folders while retaining Browse and manual overrides. The file list numbers every source clip and shows its detected current resolution, expected full-resolution output and selected low-resolution output. A background Auto check conservatively flags dark footage and possible colour/white-balance casts, then checks the completed output again. During export, the BUSY notice reports the current video count, whole-batch percentage and estimated time remaining.
+
+Version 1.3.17 adds optional named-dolphin intros and outros. Staff can assign Echo, Rani, Calypso, Comet, Betts, Zephyr, Luna, Storm or Generic to one or more imported videos, independently enable the intro and outro, and blend both joins with a 0.5-second video crossfade and matching audio crossfade. The assignment is recorded in the export summary and is used for both full- and low-resolution outputs.
 
 ## Low-resolution upload copies
 

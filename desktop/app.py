@@ -20,8 +20,10 @@ import imageio_ffmpeg
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.16"
+APP_VERSION = "1.3.17"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
+DOLPHIN_NAMES = ("Echo", "Rani", "Calypso", "Comet", "Betts", "Zephyr", "Luna", "Storm", "Generic")
+TRANSITION_SECONDS = 0.5
 
 
 def clean_code(value: str, fallback: str) -> str:
@@ -52,6 +54,9 @@ class Clip:
     low_size: StringVar
     current_resolution: StringVar
     quality_check: StringVar
+    dolphin_name: StringVar
+    add_intro: BooleanVar
+    add_outro: BooleanVar
 
 
 class TPSVideoEditor:
@@ -86,6 +91,9 @@ class TPSVideoEditor:
         self.low_res_copyright = BooleanVar(value=True)
         self.low_destination = StringVar(value=r"Z:\7 DAY LOW RES TOUR PHOTOS FOR UPLOAD")
         self.low_resolution = StringVar(value="640x480")
+        self.batch_dolphin = StringVar(value="Generic")
+        self.batch_add_intro = BooleanVar(value=False)
+        self.batch_add_outro = BooleanVar(value=False)
         self.export_quality = DoubleVar(value=85.0)
         self.auto_correct = BooleanVar(value=False)
         self.auto_white_balance = BooleanVar(value=False)
@@ -160,13 +168,13 @@ class TPSVideoEditor:
         self.count_label = ttk.Label(actions, text="0 videos", style="Card.TLabel")
         self.count_label.pack(side="right")
 
-        columns = ("item", "use", "source", "quality_check", "current_resolution", "original_size", "output", "full_resolution", "new_size", "low_resolution", "low_size", "status")
+        columns = ("item", "use", "source", "dolphin", "intro", "outro", "quality_check", "current_resolution", "original_size", "output", "full_resolution", "new_size", "low_resolution", "low_size", "status")
         tree_frame = ttk.Frame(files, style="Card.TFrame")
         tree_frame.pack(fill="both", expand=True)
         tree_scroll_y = ttk.Scrollbar(tree_frame, orient="vertical")
         tree_scroll_x = ttk.Scrollbar(tree_frame, orient="horizontal")
         self.tree = ttk.Treeview(
-            tree_frame, columns=columns, show="headings", selectmode="browse", height=7,
+            tree_frame, columns=columns, show="headings", selectmode="extended", height=7,
             yscrollcommand=tree_scroll_y.set, xscrollcommand=tree_scroll_x.set,
         )
         tree_scroll_y.config(command=self.tree.yview)
@@ -174,6 +182,9 @@ class TPSVideoEditor:
         self.tree.heading("item", text="Item")
         self.tree.heading("use", text="Use")
         self.tree.heading("source", text="Source file")
+        self.tree.heading("dolphin", text="Dolphin")
+        self.tree.heading("intro", text="Intro")
+        self.tree.heading("outro", text="Outro")
         self.tree.heading("quality_check", text="Auto check")
         self.tree.heading("current_resolution", text="Current resolution")
         self.tree.heading("original_size", text="Original size")
@@ -186,6 +197,9 @@ class TPSVideoEditor:
         self.tree.column("item", width=45, anchor="center")
         self.tree.column("use", width=52, anchor="center")
         self.tree.column("source", width=220)
+        self.tree.column("dolphin", width=85, anchor="center")
+        self.tree.column("intro", width=55, anchor="center")
+        self.tree.column("outro", width=55, anchor="center")
         self.tree.column("quality_check", width=145, anchor="center")
         self.tree.column("current_resolution", width=115, anchor="center")
         self.tree.column("original_size", width=90, anchor="e")
@@ -219,7 +233,17 @@ class TPSVideoEditor:
         ttk.Scale(preview, variable=self.preview_timeline, from_=0, to=100, command=lambda _v: self._schedule_preview()).pack(fill="x", pady=(7, 0))
         ttk.Label(preview, text="Move through the video or adjust any control—the preview refreshes automatically.", style="Card.TLabel").pack(pady=(4, 0))
 
-        naming = ttk.LabelFrame(right, text="3. Rename and output")
+        sequence = ttk.LabelFrame(right, text="3. Optional dolphin intro and outro")
+        sequence.pack(fill="x")
+        sequence_checks = ttk.Frame(sequence, style="Card.TFrame")
+        sequence_checks.pack(fill="x")
+        ttk.Checkbutton(sequence_checks, text="Add intro", variable=self.batch_add_intro).pack(side="left")
+        ttk.Checkbutton(sequence_checks, text="Add outro", variable=self.batch_add_outro).pack(side="left", padx=(12, 0))
+        ttk.Combobox(sequence_checks, textvariable=self.batch_dolphin, values=DOLPHIN_NAMES, state="readonly", width=11).pack(side="right")
+        ttk.Button(sequence, text="APPLY TO SELECTED VIDEOS", command=self.apply_sequence_to_selected).pack(fill="x", pady=(7, 3))
+        ttk.Label(sequence, text="Select one or more rows first, then apply the dolphin and intro/outro choices.", style="Card.TLabel", wraplength=350).pack(anchor="w")
+
+        naming = ttk.LabelFrame(right, text="4. Rename and output")
         naming.pack(fill="x")
         name_parts = ttk.Frame(naming, style="Card.TFrame")
         name_parts.pack(fill="x", pady=3)
@@ -257,7 +281,7 @@ class TPSVideoEditor:
         ttk.Scale(quality_row, variable=self.export_quality, from_=0, to=100, command=lambda _v: quality_value.config(text=f"{self.export_quality.get():.0f}%")).pack(side="left", fill="x", expand=True)
         ttk.Label(naming, text="85% default • 70–100 recommended • lower = smaller file", style="Card.TLabel").pack(anchor="w")
 
-        edits = ttk.LabelFrame(right, text="4. Bulk adjustments")
+        edits = ttk.LabelFrame(right, text="5. Bulk adjustments")
         edits.pack(fill="x", pady=10)
         self.edits_frame = edits
         self._slider(edits, "Exposure", self.exposure, -1.5, 1.5)
@@ -278,7 +302,7 @@ class TPSVideoEditor:
         preset_row.pack(fill="x", pady=(7, 0))
         ttk.Button(preset_row, text="Reset adjustments", command=self.neutral).pack(side="left")
 
-        logo = ttk.LabelFrame(right, text="5. TPS logo")
+        logo = ttk.LabelFrame(right, text="6. TPS logo")
         logo.pack(fill="x")
         self.logo_frame = logo
         logo_controls = ttk.Frame(logo, style="Card.TFrame")
@@ -349,11 +373,12 @@ class TPSVideoEditor:
 
 1. Select Choose SD card / folder and open the folder containing the videos.
 2. Tick the videos required. Select all and Select none change the whole list.
-3. Enter the date, photographer initials and starting number. The locked DOL filename is generated automatically.
-4. Choose the destination where the new output folder will be created.
-5. Select corrections, low-resolution copies and TPS logo settings as required.
-6. Select Preview selected and move through the timeline to compare BEFORE and AFTER.
-7. Select CREATE EDITED VIDEOS and watch the live progress display.
+3. If required, choose a dolphin, tick Add intro and/or Add outro, then apply the choice to the selected rows.
+4. Enter the date, photographer initials and starting number. The locked DOL filename is generated automatically.
+5. Choose the destination where the new output folder will be created.
+6. Select corrections, low-resolution copies and TPS logo settings as required.
+7. Select Preview selected and move through the timeline to compare BEFORE and AFTER.
+8. Select CREATE EDITED VIDEOS and watch the live progress display.
 
 VIDEOS AND NAMING
 
@@ -362,6 +387,13 @@ Auto check — Samples the source in the background and shows OK, Dark, Colour/W
 Current resolution — Detected from each source video in the background while you continue working.
 Full-res output — Shows the source resolution that will be preserved, or Skipped when low-resolution-only mode is selected.
 Low-res output — Shows the selected upload resolution, or Not selected when low-resolution copies are off.
+
+OPTIONAL DOLPHIN INTRO AND OUTRO
+
+Dolphin — Choose Echo, Rani, Calypso, Comet, Betts, Zephyr, Luna, Storm or Generic. Generic says the guest fed a wild dolphin without displaying a dolphin's name.
+Add intro / Add outro — Either clip can be included independently. Both are OFF by default.
+Apply to selected videos — Highlight one or more rows, choose the settings, then apply. If no rows are highlighted, the settings apply to every ticked video.
+Transitions — The editor blends each join with a 0.5-second video crossfade and matching audio crossfade. Intro/outro graphics retain their prepared colours; bulk colour corrections apply only to the guest footage.
 
 Date — Defaults to today's date. Enter as DD-MMM-YYYY, for example 15-SEP-2026.
 Photographer initials — Enter the staff member's initials, for example SW. DOL is fixed automatically.
@@ -417,7 +449,7 @@ The orange BUSY notice shows which video is processing, for example 1 of 10, plu
 
 STARTUP DEFAULTS — VERSION {APP_VERSION}
 
-Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Export quality 85% | Low-resolution copies OFF | Low-resolution only OFF | Low-res copyright ON | TPS logo ON | Logo size 15%
+Intro OFF | Outro OFF | Dolphin Generic | Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Shadows 0.00 | Highlights 0.00 | Blacks 0.00 | Whites 0.00 | White Balance 0.00 | Warmth 0.00 | Saturation 1.00 | Volume 1.00 | Export quality 85% | Low-resolution copies OFF | Low-resolution only OFF | Low-res copyright ON | TPS logo ON | Logo size 15%
 """)
         guide.config(state="disabled")
         ttk.Button(frame, text="Close instructions", command=win.destroy).pack(pady=(10, 0))
@@ -446,7 +478,15 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
 
     def load_clips(self, folder: Path):
         paths = sorted(p for p in folder.rglob("*") if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS)
-        self.clips = [Clip(p, BooleanVar(value=True), StringVar(value="Ready"), DoubleVar(value=0), StringVar(value="—"), StringVar(value="—"), StringVar(value="Reading…"), StringVar(value="Checking…")) for p in paths]
+        self.clips = [
+            Clip(
+                p, BooleanVar(value=True), StringVar(value="Ready"), DoubleVar(value=0),
+                StringVar(value="—"), StringVar(value="—"), StringVar(value="Reading…"),
+                StringVar(value="Checking…"), StringVar(value=self.batch_dolphin.get()),
+                BooleanVar(value=self.batch_add_intro.get()), BooleanVar(value=self.batch_add_outro.get()),
+            )
+            for p in paths
+        ]
         names = [p.name for p in paths]
         self.preview_chooser["values"] = names
         self.preview_selected_name.set(names[0] if names else "")
@@ -551,8 +591,25 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             else:
                 full_resolution = "—"
                 low_resolution = "—"
-            self.tree.insert("", "end", iid=str(index), values=(index + 1, "✓" if clip.selected.get() else "", clip.source.name, clip.quality_check.get(), clip.current_resolution.get(), original_size, name, full_resolution, clip.full_size.get(), low_resolution, clip.low_size.get(), clip.status.get()))
+            self.tree.insert("", "end", iid=str(index), values=(
+                index + 1, "✓" if clip.selected.get() else "", clip.source.name,
+                clip.dolphin_name.get(), "✓" if clip.add_intro.get() else "—", "✓" if clip.add_outro.get() else "—",
+                clip.quality_check.get(), clip.current_resolution.get(), original_size, name, full_resolution,
+                clip.full_size.get(), low_resolution, clip.low_size.get(), clip.status.get(),
+            ))
         self.count_label.config(text=f"{selected_index} of {len(self.clips)} videos selected")
+
+    def apply_sequence_to_selected(self):
+        rows = self.tree.selection()
+        targets = [self.clips[int(row)] for row in rows] if rows else self.selected_clips()
+        if not targets:
+            return messagebox.showinfo(APP_NAME, "Select at least one video first.")
+        for clip in targets:
+            clip.dolphin_name.set(self.batch_dolphin.get())
+            clip.add_intro.set(self.batch_add_intro.get())
+            clip.add_outro.set(self.batch_add_outro.get())
+        self.refresh_tree()
+        self.summary.config(text=f"Intro/outro settings applied to {len(targets)} video{'s' if len(targets) != 1 else ''}.")
 
     def toggle_row(self, event):
         if self.tree.identify_region(event.x, event.y) == "cell" and self.tree.identify_column(event.x) == "#2":
@@ -576,6 +633,11 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
 
     def selected_clips(self):
         return [c for c in self.clips if c.selected.get()]
+
+    @staticmethod
+    def intro_outro_asset(dolphin_name: str, kind: str) -> Path:
+        stem = "Wild-Dolphin" if dolphin_name == "Generic" else dolphin_name
+        return Path(__file__).with_name("assets") / "intro-outro" / f"{stem}-{kind}-1080p.mp4"
 
     def preview_selected(self):
         clips = self.selected_clips()
@@ -761,6 +823,12 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             return "Choose a destination for the low-resolution copies."
         if (self.logo_enabled.get() or self.low_res_enabled.get() or self.low_res_only.get()) and not Path(self.logo_path.get()).exists():
             return "Choose the TPS logo PNG, or turn the logo off."
+        for clip in self.selected_clips():
+            if clip.dolphin_name.get() not in DOLPHIN_NAMES:
+                return f"Choose a valid dolphin for {clip.source.name}."
+            for enabled, kind in ((clip.add_intro.get(), "Intro"), (clip.add_outro.get(), "Outro")):
+                if enabled and not self.intro_outro_asset(clip.dolphin_name.get(), kind).exists():
+                    return f"The {kind.lower()} video for {clip.dolphin_name.get()} is missing. Reinstall the editor before exporting."
         return None
 
     def start_processing(self):
@@ -800,6 +868,10 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
         settings = self.settings_snapshot()
         settings["low_res_only"] = low_only
         selected = self.selected_clips()
+        settings["clip_sequences"] = [
+            {"dolphin": clip.dolphin_name.get(), "add_intro": clip.add_intro.get(), "add_outro": clip.add_outro.get()}
+            for clip in selected
+        ]
         output_names = [self.output_name(index) for index in range(len(selected))]
         threading.Thread(target=self.process_batch, args=(output, low_output, settings, selected, output_names), daemon=True).start()
 
@@ -969,68 +1041,167 @@ Auto Exposure OFF | Auto White Balance OFF | Exposure 0.00 | Contrast 1.00 | Sha
             return [ffmpeg_path(), "-y", "-i", str(source), "-loop", "1", "-i", str(self.copyright_watermark(width, height)), "-filter_complex", graph, "-map", "[outv]", "-map", "0:a?", "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "128k", "-shortest", "-movflags", "+faststart", str(target)]
         return [ffmpeg_path(), "-y", "-i", str(source), "-vf", resize, "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)]
 
+    def intro_outro_command(self, guest: Path, target: Path, sequence, guest_duration: float, settings):
+        """Join the untouched branded intro/outro to an already edited guest master."""
+        add_intro = sequence["add_intro"]
+        add_outro = sequence["add_outro"]
+        width, height = self.video_dimensions(guest)
+        common_video = (
+            f"scale={width}:{height},format=yuv420p,"
+            f"fps=30,settb=AVTB,setpts=PTS-STARTPTS"
+        )
+        inputs = [ffmpeg_path(), "-y", "-i", str(guest)]
+        graph = [f"[0:v]{common_video}[guestv]", "[0:a]aresample=48000,asetpts=PTS-STARTPTS[guesta]"]
+        next_input = 1
+        if add_intro:
+            inputs += ["-i", str(self.intro_outro_asset(sequence["dolphin"], "Intro"))]
+            graph += [
+                f"[{next_input}:v]{common_video}[introv]",
+                f"[{next_input}:a]aresample=48000,asetpts=PTS-STARTPTS[introa]",
+            ]
+            intro_index = next_input
+            next_input += 1
+        if add_outro:
+            inputs += ["-i", str(self.intro_outro_asset(sequence["dolphin"], "Outro"))]
+            graph += [
+                f"[{next_input}:v]{common_video}[outrov]",
+                f"[{next_input}:a]aresample=48000,asetpts=PTS-STARTPTS[outroa]",
+            ]
+        fade = TRANSITION_SECONDS
+        blend = f"blend=all_expr='A*(1-T/{fade})+B*(T/{fade})':shortest=1"
+        if add_intro and add_outro:
+            graph += [
+                "[introv]split=2[introprein][introfadein]",
+                "[guestv]split=3[guestheadin][guestmidin][guesttailin]",
+                "[outrov]split=2[outrofadein][outropostin]",
+                f"[introprein]trim=start=0:end={6.0-fade},setpts=PTS-STARTPTS[intropre]",
+                f"[introfadein]trim=start={6.0-fade}:end=6,setpts=PTS-STARTPTS[introfade]",
+                f"[guestheadin]trim=start=0:end={fade},setpts=PTS-STARTPTS[guesthead]",
+                f"[introfade][guesthead]{blend}[blendin]",
+                f"[guestmidin]trim=start={fade}:end={max(fade, guest_duration-fade)},setpts=PTS-STARTPTS[guestmid]",
+                f"[guesttailin]trim=start={max(0.0, guest_duration-fade)}:end={guest_duration},setpts=PTS-STARTPTS[guesttail]",
+                f"[outrofadein]trim=start=0:end={fade},setpts=PTS-STARTPTS[outrofade]",
+                f"[guesttail][outrofade]{blend}[blendout]",
+                f"[outropostin]trim=start={fade}:end=6,setpts=PTS-STARTPTS[outropost]",
+                "[intropre][blendin][guestmid][blendout][outropost]concat=n=5:v=1:a=0[outv]",
+                f"[introa][guesta]acrossfade=d={fade}:c1=tri:c2=tri[joineda]",
+                f"[joineda][outroa]acrossfade=d={fade}:c1=tri:c2=tri[outa]",
+            ]
+        elif add_intro:
+            graph += [
+                "[introv]split=2[introprein][introfadein]", "[guestv]split=2[guestheadin][guestpostin]",
+                f"[introprein]trim=start=0:end={6.0-fade},setpts=PTS-STARTPTS[intropre]",
+                f"[introfadein]trim=start={6.0-fade}:end=6,setpts=PTS-STARTPTS[introfade]",
+                f"[guestheadin]trim=start=0:end={fade},setpts=PTS-STARTPTS[guesthead]",
+                f"[introfade][guesthead]{blend}[blendin]",
+                f"[guestpostin]trim=start={fade}:end={guest_duration},setpts=PTS-STARTPTS[guestpost]",
+                "[intropre][blendin][guestpost]concat=n=3:v=1:a=0[outv]",
+                f"[introa][guesta]acrossfade=d={fade}:c1=tri:c2=tri[outa]",
+            ]
+        else:
+            graph += [
+                "[guestv]split=2[guestprein][guestfadein]", "[outrov]split=2[outrofadein][outropostin]",
+                f"[guestprein]trim=start=0:end={max(0.0, guest_duration-fade)},setpts=PTS-STARTPTS[guestpre]",
+                f"[guestfadein]trim=start={max(0.0, guest_duration-fade)}:end={guest_duration},setpts=PTS-STARTPTS[guestfade]",
+                f"[outrofadein]trim=start=0:end={fade},setpts=PTS-STARTPTS[outrofade]",
+                f"[guestfade][outrofade]{blend}[blendout]",
+                f"[outropostin]trim=start={fade}:end=6,setpts=PTS-STARTPTS[outropost]",
+                "[guestpre][blendout][outropost]concat=n=3:v=1:a=0[outv]",
+                f"[guesta][outroa]acrossfade=d={fade}:c1=tri:c2=tri[outa]",
+            ]
+        crf = str(self.quality_crf(settings["export_quality"], False))
+        return inputs + [
+            "-filter_complex", ";".join(graph), "-map", "[outv]", "-map", "[outa]",
+            "-c:v", "libx264", "-preset", "fast", "-crf", crf, "-threads", "0",
+            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(target),
+        ]
+
+    @staticmethod
+    def final_duration(guest_duration: float, sequence) -> float:
+        additions = int(sequence["add_intro"]) + int(sequence["add_outro"])
+        return guest_duration + additions * (6.0 - TRANSITION_SECONDS)
+
     def process_batch(self, output: Path | None, low_output: Path | None, settings, selected, output_names):
         results = []
         completed_outputs = 0
         try:
             low_only = settings.get("low_res_only", False)
-            outputs_per_clip = 1 if low_only else (2 if low_output is not None else 1)
-            task_total = len(selected) * outputs_per_clip
+            sequences = settings["clip_sequences"]
+            task_total = sum(
+                (3 if low_only and (sequence["add_intro"] or sequence["add_outro"]) else 1)
+                if low_only else
+                (1 + int(sequence["add_intro"] or sequence["add_outro"]) + int(low_output is not None))
+                for sequence in sequences
+            )
             task_index = 0
             for index, clip in enumerate(selected):
                 if self.stop_requested.is_set():
                     break
                 duration = self.video_duration(clip.source)
+                sequence = sequences[index]
+                use_sequence = sequence["add_intro"] or sequence["add_outro"]
                 target = None
-                full_log = ""
-                ok = True
-                if not low_only:
-                    target = output / output_names[index]
-                    self.root.after(0, lambda c=clip: c.status.set("Starting full-resolution FFmpeg…"))
-                    self.root.after(0, self.refresh_tree)
-                    return_code, full_log = self.run_export(self.command(clip.source, target, settings), duration, clip, "Full resolution", task_index, task_total, index + 1, len(selected))
-                    if self.stop_requested.is_set():
-                        target.unlink(missing_ok=True)
-                        self.root.after(0, lambda c=clip: c.status.set("Stopped"))
-                        break
-                    task_index += 1
-                    ok = return_code == 0 and target.exists()
-                    if ok:
-                        completed_outputs += 1
-                        full_size = human_size(target.stat().st_size)
-                        self.root.after(0, lambda c=clip, s=full_size: c.full_size.set(s))
-                        self.root.after(0, lambda i=index + 1, total=len(selected): self.busy_notice.config(text=f"BUSY — QUALITY CHECK {i} OF {total}", style="Busy.TLabel"))
-                        export_check = self.video_quality_check(target)
-                        self.root.after(0, lambda c=clip, q=export_check: c.quality_check.set(f"Export: {q}"))
                 low_target = None
+                full_log = ""
                 low_error = ""
-                if ok and low_output is not None:
-                    low_target = low_output / output_names[index]
-                    self.root.after(0, lambda c=clip: c.status.set("Starting low-res FFmpeg…"))
-                    low_command = self.command(clip.source, low_target, settings, low_res=True) if low_only or not settings["logo_enabled"] else self.low_res_from_completed_command(target, low_target, settings)
-                    low_code, low_log = self.run_export(low_command, duration, clip, "Low resolution", task_index, task_total, index + 1, len(selected))
+                ok = True
+                work_parent = low_output if low_only else output
+                guest_work = work_parent / f".{Path(output_names[index]).stem}.guest-working.mp4"
+                joined_work = work_parent / f".{Path(output_names[index]).stem}.joined-working.mp4"
+                try:
+                    if low_only and not use_sequence:
+                        low_target = low_output / output_names[index]
+                        code, full_log = self.run_export(self.command(clip.source, low_target, settings, low_res=True), duration, clip, "Low resolution", task_index, task_total, index + 1, len(selected))
+                        task_index += 1
+                        ok = code == 0 and low_target.exists()
+                    else:
+                        target = (output / output_names[index]) if not low_only else joined_work
+                        first_target = guest_work if use_sequence else target
+                        code, full_log = self.run_export(self.command(clip.source, first_target, settings), duration, clip, "Editing guest video", task_index, task_total, index + 1, len(selected))
+                        task_index += 1
+                        ok = code == 0 and first_target.exists()
+                        if ok and use_sequence:
+                            final_master = target
+                            joined_duration = self.final_duration(duration, sequence)
+                            code, join_log = self.run_export(self.intro_outro_command(first_target, final_master, sequence, duration, settings), joined_duration, clip, f"Adding {sequence['dolphin']} intro/outro", task_index, task_total, index + 1, len(selected))
+                            task_index += 1
+                            full_log += "\n" + join_log
+                            ok = code == 0 and final_master.exists()
+                        if ok and not low_only:
+                            completed_outputs += 1
+                            full_size = human_size(target.stat().st_size)
+                            self.root.after(0, lambda c=clip, s=full_size: c.full_size.set(s))
+                        if ok and low_output is not None:
+                            low_target = low_output / output_names[index]
+                            master = target
+                            master_duration = self.final_duration(duration, sequence) if use_sequence else duration
+                            low_code, low_log = self.run_export(self.low_res_from_completed_command(master, low_target, settings), master_duration, clip, "Low resolution", task_index, task_total, index + 1, len(selected))
+                            task_index += 1
+                            ok = low_code == 0 and low_target.exists()
+                            if not ok:
+                                low_error = low_log[-2000:]
                     if self.stop_requested.is_set():
-                        low_target.unlink(missing_ok=True)
+                        if low_target:
+                            low_target.unlink(missing_ok=True)
+                        elif target:
+                            target.unlink(missing_ok=True)
                         self.root.after(0, lambda c=clip: c.status.set("Stopped"))
                         break
-                    task_index += 1
-                    low_ok = low_code == 0 and low_target.exists()
-                    if low_ok:
+                    if ok and low_target is not None:
                         completed_outputs += 1
                         low_size = human_size(low_target.stat().st_size)
                         self.root.after(0, lambda c=clip, s=low_size: c.low_size.set(s))
-                        if low_only:
-                            self.root.after(0, lambda i=index + 1, total=len(selected): self.busy_notice.config(text=f"BUSY — QUALITY CHECK {i} OF {total}", style="Busy.TLabel"))
-                            export_check = self.video_quality_check(low_target)
-                            self.root.after(0, lambda c=clip, q=export_check: c.quality_check.set(f"Export: {q}"))
-                    ok = ok and low_ok
-                    if not low_ok:
-                        low_error = low_log[-2000:]
-                elif low_output is not None and not low_only:
-                    task_index += 1
+                    if ok:
+                        check_target = low_target if low_only else target
+                        self.root.after(0, lambda i=index + 1, total=len(selected): self.busy_notice.config(text=f"BUSY — QUALITY CHECK {i} OF {total}", style="Busy.TLabel"))
+                        export_check = self.video_quality_check(check_target)
+                        self.root.after(0, lambda c=clip, q=export_check: c.quality_check.set(f"Export: {q}"))
+                finally:
+                    guest_work.unlink(missing_ok=True)
+                    joined_work.unlink(missing_ok=True)
                 status = "Complete" if ok else "Failed"
                 self.root.after(0, lambda c=clip, s=status: c.status.set(s))
-                results.append({"source": str(clip.source), "output": str(target) if target else None, "low_res_output": str(low_target) if low_target else None, "status": status, "error": "" if ok else (low_error or full_log[-2000:])})
+                results.append({"source": str(clip.source), "dolphin": sequence["dolphin"], "intro": sequence["add_intro"], "outro": sequence["add_outro"], "output": str(target) if target and not low_only else None, "low_res_output": str(low_target) if low_target else None, "status": status, "error": "" if ok else (low_error or full_log[-2000:])})
                 self.root.after(0, lambda p=task_index / task_total * 100: self.overall.configure(value=p))
                 self.root.after(0, lambda done=task_index, total=task_total: self.summary.config(text=f"Creating videos: {done} of {total} outputs completed"))
                 self.root.after(0, self.refresh_tree)
