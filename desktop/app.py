@@ -14,13 +14,13 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from tkinter import BooleanVar, DoubleVar, StringVar, TclError, Text, Tk, Toplevel, filedialog, messagebox, ttk
+from tkinter import BooleanVar, Canvas, DoubleVar, StringVar, TclError, Text, Tk, Toplevel, filedialog, messagebox, ttk
 
 import imageio_ffmpeg
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.17"
+APP_VERSION = "1.3.18"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 DOLPHIN_NAMES = ("Echo", "Rani", "Calypso", "Comet", "Betts", "Zephyr", "Luna", "Storm", "Generic")
 TRANSITION_SECONDS = 0.5
@@ -149,10 +149,26 @@ class TPSVideoEditor:
 
         body = ttk.Frame(self.root, padding=16)
         body.pack(fill="both", expand=True)
+        right_outer = ttk.Frame(body, width=470)
+        right_outer.pack(side="right", fill="y", padx=(8, 0))
+        right_outer.pack_propagate(False)
+        right_scroll = ttk.Scrollbar(right_outer, orient="vertical")
+        right_scroll.pack(side="right", fill="y")
+        right_canvas = Canvas(right_outer, background="#eef3f4", highlightthickness=0, yscrollcommand=right_scroll.set)
+        right_canvas.pack(side="left", fill="both", expand=True)
+        right_scroll.config(command=right_canvas.yview)
+        right = ttk.Frame(right_canvas)
+        right_window = right_canvas.create_window((0, 0), window=right, anchor="nw")
+        right.bind("<Configure>", lambda _e: right_canvas.configure(scrollregion=right_canvas.bbox("all")))
+        right_canvas.bind("<Configure>", lambda e: right_canvas.itemconfigure(right_window, width=e.width))
+
+        def scroll_right(event):
+            right_canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+
+        right.bind("<Enter>", lambda _e: right_canvas.bind_all("<MouseWheel>", scroll_right))
+        right.bind("<Leave>", lambda _e: right_canvas.unbind_all("<MouseWheel>"))
         left = ttk.Frame(body)
         left.pack(side="left", fill="both", expand=True, padx=(0, 8))
-        right = ttk.Frame(body, width=390)
-        right.pack(side="right", fill="y", padx=(8, 0))
 
         files = ttk.LabelFrame(left, text="1. Videos from SD card")
         files.pack(fill="x")
@@ -239,7 +255,10 @@ class TPSVideoEditor:
         sequence_checks.pack(fill="x")
         ttk.Checkbutton(sequence_checks, text="Add intro", variable=self.batch_add_intro).pack(side="left")
         ttk.Checkbutton(sequence_checks, text="Add outro", variable=self.batch_add_outro).pack(side="left", padx=(12, 0))
-        ttk.Combobox(sequence_checks, textvariable=self.batch_dolphin, values=DOLPHIN_NAMES, state="readonly", width=11).pack(side="right")
+        dolphin_row = ttk.Frame(sequence, style="Card.TFrame")
+        dolphin_row.pack(fill="x", pady=(7, 0))
+        ttk.Label(dolphin_row, text="Dolphin name", width=20, style="Card.TLabel").pack(side="left")
+        ttk.Combobox(dolphin_row, textvariable=self.batch_dolphin, values=DOLPHIN_NAMES, state="readonly").pack(side="left", fill="x", expand=True)
         ttk.Button(sequence, text="APPLY TO SELECTED VIDEOS", command=self.apply_sequence_to_selected).pack(fill="x", pady=(7, 3))
         ttk.Label(sequence, text="Select one or more rows first, then apply the dolphin and intro/outro choices.", style="Card.TLabel", wraplength=350).pack(anchor="w")
 
@@ -247,12 +266,13 @@ class TPSVideoEditor:
         naming.pack(fill="x")
         name_parts = ttk.Frame(naming, style="Card.TFrame")
         name_parts.pack(fill="x", pady=3)
-        ttk.Label(name_parts, text="Date", style="Card.TLabel").pack(side="left")
-        ttk.Entry(name_parts, textvariable=self.job_date, width=13).pack(side="left", padx=(4, 8))
-        ttk.Label(name_parts, text="DOL  •  Initials", style="Card.TLabel").pack(side="left")
-        ttk.Entry(name_parts, textvariable=self.photographer, width=5).pack(side="left", padx=(4, 8))
-        ttk.Label(name_parts, text="Start", style="Card.TLabel").pack(side="left")
-        ttk.Entry(name_parts, textvariable=self.start_number, width=5).pack(side="left", padx=(4, 0))
+        ttk.Label(name_parts, text="Date", width=20, style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=2)
+        ttk.Entry(name_parts, textvariable=self.job_date).grid(row=0, column=1, sticky="ew", pady=2)
+        ttk.Label(name_parts, text="Photographer initials", width=20, style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=2)
+        ttk.Entry(name_parts, textvariable=self.photographer).grid(row=1, column=1, sticky="ew", pady=2)
+        ttk.Label(name_parts, text="Starting number", width=20, style="Card.TLabel").grid(row=2, column=0, sticky="w", pady=2)
+        ttk.Entry(name_parts, textvariable=self.start_number).grid(row=2, column=1, sticky="ew", pady=2)
+        name_parts.columnconfigure(1, weight=1)
         ttk.Label(naming, textvariable=self.first_filename, style="Card.TLabel").pack(anchor="w", pady=(0, 4))
         folder_row = ttk.Frame(naming, style="Card.TFrame")
         folder_row.pack(fill="x", pady=3)
