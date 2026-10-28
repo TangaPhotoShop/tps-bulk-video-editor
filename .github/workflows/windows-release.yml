@@ -2,6 +2,7 @@ name: Build Windows release
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags: ['v*']
 permissions:
   contents: write
@@ -12,13 +13,21 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: '3.12'}
-      - shell: powershell
+      - id: build
+        shell: powershell
         run: ./build-windows.ps1
+      - id: version
+        shell: powershell
+        run: |
+          $installer = Get-ChildItem "dist/TPS.Bulk.Video.Editor.Setup.v*.exe" | Select-Object -First 1
+          $version = $installer.Name -replace '^TPS\.Bulk\.Video\.Editor\.Setup\.', '' -replace '\.exe$', ''
+          "tag=$version" >> $env:GITHUB_OUTPUT
       - uses: actions/upload-artifact@v4
         with:
           name: TPS-Bulk-Video-Editor-${{ github.ref_name }}-Windows
           path: dist/TPS.Bulk.Video.Editor.Setup.v*.exe
       - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/')
         with:
+          tag_name: ${{ steps.version.outputs.tag }}
           files: dist/TPS.Bulk.Video.Editor.Setup.v*.exe
