@@ -20,7 +20,7 @@ import imageio_ffmpeg
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
 APP_NAME = "TPS Bulk Video Editor"
-APP_VERSION = "1.3.19"
+APP_VERSION = "1.3.20"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi"}
 DOLPHIN_NAMES = ("Echo", "Rani", "Calypso", "Comet", "Betts", "Zephyr", "Luna", "Storm", "Generic")
 TRANSITION_SECONDS = 0.5
@@ -1062,7 +1062,7 @@ Intro OFF | Outro OFF | Dolphin Generic | Auto Exposure OFF | Auto White Balance
         return [ffmpeg_path(), "-y", "-i", str(source), "-vf", resize, "-c:v", "libx264", "-preset", "veryfast", "-crf", crf, "-threads", "0", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(target)]
 
     def intro_outro_command(self, guest: Path, target: Path, sequence, guest_duration: float, settings):
-        """Join the untouched branded intro/outro to an already edited guest master."""
+        """Join intro/outro and lead with one identifying frame from the guest master."""
         add_intro = sequence["add_intro"]
         add_outro = sequence["add_outro"]
         width, height = self.video_dimensions(guest)
@@ -1070,8 +1070,15 @@ Intro OFF | Outro OFF | Dolphin Generic | Auto Exposure OFF | Auto White Balance
             f"scale={width}:{height},format=yuv420p,"
             f"fps=30,settb=AVTB,setpts=PTS-STARTPTS"
         )
+        thumbnail_seconds = 1.0 / 30.0
+        thumbnail_at = max(0.0, guest_duration / 2.0)
         inputs = [ffmpeg_path(), "-y", "-i", str(guest)]
-        graph = [f"[0:v]{common_video}[guestv]", "[0:a]aresample=48000,asetpts=PTS-STARTPTS[guesta]"]
+        graph = [
+            f"[0:v]{common_video}[guestbase]",
+            "[guestbase]split=2[thumbnailin][guestv]",
+            f"[thumbnailin]trim=start={thumbnail_at}:end={thumbnail_at + thumbnail_seconds},setpts=PTS-STARTPTS[thumbnail]",
+            "[0:a]aresample=48000,asetpts=PTS-STARTPTS[guesta]",
+        ]
         next_input = 1
         if add_intro:
             inputs += ["-i", str(self.intro_outro_asset(sequence["dolphin"], "Intro"))]
@@ -1103,9 +1110,9 @@ Intro OFF | Outro OFF | Dolphin Generic | Auto Exposure OFF | Auto White Balance
                 f"[outrofadein]trim=start=0:end={fade},setpts=PTS-STARTPTS[outrofade]",
                 f"[guesttail][outrofade]{blend}[blendout]",
                 f"[outropostin]trim=start={fade}:end=6,setpts=PTS-STARTPTS[outropost]",
-                "[intropre][blendin][guestmid][blendout][outropost]concat=n=5:v=1:a=0[outv]",
+                "[intropre][blendin][guestmid][blendout][outropost]concat=n=5:v=1:a=0[sequencev]",
                 f"[introa][guesta]acrossfade=d={fade}:c1=tri:c2=tri[joineda]",
-                f"[joineda][outroa]acrossfade=d={fade}:c1=tri:c2=tri[outa]",
+                f"[joineda][outroa]acrossfade=d={fade}:c1=tri:c2=tri[sequencea]",
             ]
         elif add_intro:
             graph += [
@@ -1115,8 +1122,8 @@ Intro OFF | Outro OFF | Dolphin Generic | Auto Exposure OFF | Auto White Balance
                 f"[guestheadin]trim=start=0:end={fade},setpts=PTS-STARTPTS[guesthead]",
                 f"[introfade][guesthead]{blend}[blendin]",
                 f"[guestpostin]trim=start={fade}:end={guest_duration},setpts=PTS-STARTPTS[guestpost]",
-                "[intropre][blendin][guestpost]concat=n=3:v=1:a=0[outv]",
-                f"[introa][guesta]acrossfade=d={fade}:c1=tri:c2=tri[outa]",
+                "[intropre][blendin][guestpost]concat=n=3:v=1:a=0[sequencev]",
+                f"[introa][guesta]acrossfade=d={fade}:c1=tri:c2=tri[sequencea]",
             ]
         else:
             graph += [
@@ -1126,9 +1133,13 @@ Intro OFF | Outro OFF | Dolphin Generic | Auto Exposure OFF | Auto White Balance
                 f"[outrofadein]trim=start=0:end={fade},setpts=PTS-STARTPTS[outrofade]",
                 f"[guestfade][outrofade]{blend}[blendout]",
                 f"[outropostin]trim=start={fade}:end=6,setpts=PTS-STARTPTS[outropost]",
-                "[guestpre][blendout][outropost]concat=n=3:v=1:a=0[outv]",
-                f"[guesta][outroa]acrossfade=d={fade}:c1=tri:c2=tri[outa]",
+                "[guestpre][blendout][outropost]concat=n=3:v=1:a=0[sequencev]",
+                f"[guesta][outroa]acrossfade=d={fade}:c1=tri:c2=tri[sequencea]",
             ]
+        graph += [
+            "[thumbnail][sequencev]concat=n=2:v=1:a=0[outv]",
+            f"[sequencea]adelay={round(thumbnail_seconds * 1000)}:all=1[outa]",
+        ]
         crf = str(self.quality_crf(settings["export_quality"], False))
         return inputs + [
             "-filter_complex", ";".join(graph), "-map", "[outv]", "-map", "[outa]",
@@ -1139,7 +1150,8 @@ Intro OFF | Outro OFF | Dolphin Generic | Auto Exposure OFF | Auto White Balance
     @staticmethod
     def final_duration(guest_duration: float, sequence) -> float:
         additions = int(sequence["add_intro"]) + int(sequence["add_outro"])
-        return guest_duration + additions * (6.0 - TRANSITION_SECONDS)
+        thumbnail_seconds = (1.0 / 30.0) if additions else 0.0
+        return guest_duration + additions * (6.0 - TRANSITION_SECONDS) + thumbnail_seconds
 
     def process_batch(self, output: Path | None, low_output: Path | None, settings, selected, output_names):
         results = []
